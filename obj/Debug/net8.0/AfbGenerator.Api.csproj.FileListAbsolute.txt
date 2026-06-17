@@ -131,7 +131,6 @@ C:\Users\Administrator\Desktop\khalil\AFB\AFB-EXCEL-Mali\AfbGenerator.Api\obj\De
 C:\Users\Administrator\Desktop\khalil\AFB\AFB-EXCEL-Mali\AfbGenerator.Api\obj\Debug\net8.0\AfbGenerator.Api.csproj.CoreCompileInputs.cache
 C:\Users\Administrator\Desktop\khalil\AFB\AFB-EXCEL-Mali\AfbGenerator.Api\obj\Debug\net8.0\AfbGenerator.Api.MvcApplicationPartsAssemblyInfo.cs
 C:\Users\Administrator\Desktop\khalil\AFB\AFB-EXCEL-Mali\AfbGenerator.Api\obj\Debug\net8.0\AfbGenerator.Api.MvcApplicationPartsAssemblyInfo.cache
-C:\Users\Administrator\Desktop\khalil\AFB\AFB-EXCEL-Mali\AfbGenerator.Api\obj\Debug\net8.0\AfbGenerator.Api.sourcelink.json
 C:\Users\Administrator\Desktop\khalil\AFB\AFB-EXCEL-Mali\AfbGenerator.Api\obj\Debug\net8.0\rjimswa.dswa.cache.json
 C:\Users\Administrator\Desktop\khalil\AFB\AFB-EXCEL-Mali\AfbGenerator.Api\obj\Debug\net8.0\rjsmrazor.dswa.cache.json
 C:\Users\Administrator\Desktop\khalil\AFB\AFB-EXCEL-Mali\AfbGenerator.Api\obj\Debug\net8.0\rjsmcshtml.dswa.cache.json

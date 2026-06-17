@@ -14,7 +14,7 @@ public class AppDbContext : DbContext
     public DbSet<Libelle> Libelles => Set<Libelle>();
     public DbSet<Banque> Banques { get; set; }
     public DbSet<NEWFlux> Flux { get; set; }
-    public DbSet<Cib> Cibs { get; set; }
+    public DbSet<Cib> Cib { get; set; }
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);

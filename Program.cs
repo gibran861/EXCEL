@@ -18,7 +18,7 @@ builder.Services.AddDbContext<XrtDbContext>(options =>
 builder.Services.AddScoped<FluxService>();
 builder.Services.AddScoped<LibelleService>();
 builder.Services.AddScoped<XrtSyncService>();
-
+builder.Services.AddScoped<CibService>();
 var app = builder.Build();
 
 using (var scope = app.Services.CreateScope())

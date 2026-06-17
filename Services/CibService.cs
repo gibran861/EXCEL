@@ -28,7 +28,7 @@ public class CibService
 
         var normalizedCode = request.Code.Trim().ToUpperInvariant();
 
-        var exists = await _dbContext.Cibs.AnyAsync(x => x.Code == normalizedCode, cancellationToken);
+        var exists = await _dbContext.Cib.AnyAsync(x => x.Code == normalizedCode, cancellationToken);
         if (exists)
         {
             throw new InvalidOperationException($"La CIB avec le code '{normalizedCode}' existe déjà.");
@@ -43,7 +43,7 @@ public class CibService
             CreatedAt = DateTime.UtcNow
         };
 
-        _dbContext.Cibs.Add(cib);
+        _dbContext.Cib.Add(cib);
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         return Map(cib);
@@ -51,7 +51,7 @@ public class CibService
 
     public async Task<List<CibResponse>> GetAllAsync(CancellationToken cancellationToken = default)
     {
-        return await _dbContext.Cibs
+        return await _dbContext.Cib
             .OrderBy(x => x.Code)
             .Select(x => new CibResponse
             {
@@ -109,7 +109,7 @@ public class CibService
             if (string.IsNullOrWhiteSpace(code)) continue; // Ignore les lignes vides
 
             // 3. Upsert (Mise à jour ou Insertion)
-            var existingCib = await _dbContext.Cibs.FirstOrDefaultAsync(x => x.Code == code, cancellationToken);
+            var existingCib = await _dbContext.Cib.FirstOrDefaultAsync(x => x.Code == code, cancellationToken);
 
             if (existingCib == null)
             {
@@ -121,7 +121,7 @@ public class CibService
                     IsActive = true,
                     CreatedAt = DateTime.UtcNow
                 };
-                await _dbContext.Cibs.AddAsync(newCib, cancellationToken);
+                await _dbContext.Cib.AddAsync(newCib, cancellationToken);
                 insertedCount++;
             }
             else
