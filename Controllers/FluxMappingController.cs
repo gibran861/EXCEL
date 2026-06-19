@@ -6,6 +6,7 @@ using AfbGenerator.Api.Data;
 using AfbGenerator.Api.Entities;
 using AfbGenerator.Api.Models;
 
+using AfbGenerator.Api.Services;
 
 
 
@@ -16,10 +17,12 @@ namespace AfbGenerator.Server.Controllers
     public class FluxMappingController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly fluxMappingService _fluxMappingService;
 
-        public FluxMappingController(AppDbContext context)
+        public FluxMappingController(AppDbContext context,fluxMappingService fluxMappingService)
         {
             _context = context;
+            _fluxMappingService = fluxMappingService;
         }
 
         // ── 1. GET ALL MAPPINGS ─────────────────────────────────────────────
@@ -95,6 +98,27 @@ namespace AfbGenerator.Server.Controllers
 
             return Ok(new { Message = "Mapping supprimé avec succès." });
         }
+
+        [HttpPost("import-excel")]
+[Consumes("multipart/form-data")]
+[ProducesResponseType(typeof(FluxMappingImportResult), StatusCodes.Status200OK)]
+[ProducesResponseType(StatusCodes.Status400BadRequest)]
+public async Task<ActionResult<FluxMappingImportResult>> ImportFluxMappingExcel(IFormFile file, CancellationToken cancellationToken)
+{
+    try
+    {
+        var result = await _fluxMappingService.ImportFluxMappingDataAsync(file, cancellationToken);
+        return Ok(result);
+    }
+    catch (ArgumentException ex)
+    {
+        return BadRequest(new { message = ex.Message });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return BadRequest(new { message = ex.Message });
+    }
+}
     }
 
     
