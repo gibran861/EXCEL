@@ -167,12 +167,15 @@ public class MissingMappingsException : Exception
             // Bloquer la génération SI des libellés n'ont pas pu être associés
             if (missingKeywords.Any())
             {
-                throw new MissingMappingsException(missingKeywords.OrderBy(k => k).ToList());
+throw new MissingMappingsException(missingKeywords.OrderBy(k => k.OriginalLabel).ToList());
             }
 
             if (!movements.Any()) return new GenerateResultDto { Message = "Aucune transaction valide trouvée dans le fichier Excel.", TotalMouvements = 0 };
-            movements = movements.OrderBy(m => m.OperationDate).ToList();
-
+movements = movements
+    .OrderBy(m => m.OperationDate ?? DateTime.MinValue)
+    .ThenBy(m => m.Label)
+    .ThenBy(m => m.Amount)
+    .ToList();
             string finalOutputDir = string.IsNullOrWhiteSpace(outputPath) ? @"C:\BankFiles\AFB120\" : outputPath;
             Directory.CreateDirectory(finalOutputDir);
 
