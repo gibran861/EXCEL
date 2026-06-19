@@ -32,15 +32,21 @@ namespace AfbGenerator.Api.Services
     }
 
     // Exception personnalisée capturable par un Middleware ou le contrôleur pour renvoyer un HTTP 422
-    public class MissingMappingsException : Exception
+   public class MissingMappingItem
+{
+    public string OriginalLabel { get; set; } = string.Empty;
+    public decimal Amount { get; set; }
+}
+
+public class MissingMappingsException : Exception
+{
+    public List<MissingMappingItem> MissingKeywords { get; }
+    public MissingMappingsException(List<MissingMappingItem> missingKeywords) 
+        : base("Certains libellés n'ont pas de mapping flux défini.")
     {
-        public List<string> MissingKeywords { get; }
-        public MissingMappingsException(List<string> missingKeywords) 
-            : base("Certains libellés n'ont pas de mapping flux défini.")
-        {
-            MissingKeywords = missingKeywords;
-        }
+        MissingKeywords = missingKeywords;
     }
+}
 
     public class Afb120Service
     {
@@ -93,7 +99,7 @@ namespace AfbGenerator.Api.Services
             string cleanRib = bankCode.Length >= 11 ? bankCode[10..] : "0"; 
 
             // Liste pour collecter les libellés originaux non mappés uniques
-            var missingKeywords = new HashSet<string>();
+            var missingKeywords = new List<MissingMappingItem>();
 
             foreach (var row in rows.Skip(headerRowIndex + 1))
             {
@@ -130,7 +136,11 @@ namespace AfbGenerator.Api.Services
                     // Si non détecté, on garde en mémoire le libellé brut/original pour le proposer à l'utilisateur
                     if (!string.IsNullOrWhiteSpace(originalLibelle))
                     {
-                        missingKeywords.Add(originalLibelle);
+                        missingKeywords.Add(new MissingMappingItem 
+                { 
+                    OriginalLabel = originalLibelle, 
+                    Amount = amount 
+                });
                     }
                 }
 
