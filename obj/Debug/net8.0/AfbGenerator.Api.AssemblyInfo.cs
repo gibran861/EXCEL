@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("AfbGenerator.Api")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+564db713ff4680e5902637f2f0a21fdc9cbb0c10")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+3e3c9657d30d90c3bf875d3348f6da3379198ac2")]
 [assembly: System.Reflection.AssemblyProductAttribute("AfbGenerator.Api")]
 [assembly: System.Reflection.AssemblyTitleAttribute("AfbGenerator.Api")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
