@@ -4,7 +4,8 @@ using AfbGenerator.Api.Models;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using ExcelDataReader; // 💡 AJOUTEZ CETTE LIGNE ICI
+using ExcelDataReader; 
+
 namespace AfbGenerator.Api.Controllers;
 
 [ApiController]
@@ -32,6 +33,48 @@ public class BanqueController : ControllerBase
         return Ok(banques);
     }
 
+    // 🔥 NOUVEAU - 1b. GET : Récupérer le libellé à partir du code banque
+    // Exemple d'appel : GET api/Banque/code/AFB/libelle
+    [HttpGet("code/{code}/libelle")]
+    [ProducesResponseType(typeof(string), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<string>> GetLibelleByCode(string code, CancellationToken cancellationToken)
+    {
+        var libelle = await _dbContext.Banques
+            .AsNoTracking()
+            .Where(b => b.CodeBanque == code.Trim())
+            .Select(b => b.Libelle)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (libelle == null)
+        {
+            return NotFound(new { message = $"Aucune banque trouvée pour le code '{code}'." });
+        }
+
+        return Ok(libelle);
+    }
+
+    // 🔥 NOUVEAU - 1c. GET : Récupérer le libellé à partir du numéro de compte
+    // Exemple d'appel : GET api/Banque/compte/123456789/libelle
+    [HttpGet("compte/{compte}/libelle")]
+    [ProducesResponseType(typeof(string), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<string>> GetLibelleByCompte(string compte, CancellationToken cancellationToken)
+    {
+        var libelle = await _dbContext.Banques
+            .AsNoTracking()
+            .Where(b => b.Compte == compte.Trim())
+            .Select(b => b.Libelle)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (libelle == null)
+        {
+            return NotFound(new { message = $"Aucune banque trouvée pour le compte '{compte}'." });
+        }
+
+        return Ok(libelle);
+    }
+
     // 2. POST : Ajouter une nouvelle configuration de banque
     [HttpPost]
     [ProducesResponseType(typeof(Banque), StatusCodes.Status201Created)]
@@ -43,28 +86,24 @@ public class BanqueController : ControllerBase
             return BadRequest(ModelState);
         }
 
-        // Création de l'entité à partir du modèle reçu
-        // Création de l'entité à partir du modèle reçu
-            var nouvelleBanque = new Banque
-            {
-                CodeBanque = request.CodeBanque.Trim().ToUpperInvariant(),
-                Filiale = request.Filiale.Trim().ToUpperInvariant(),
-                TypeFichier = request.TypeFichier?.Trim().ToUpperInvariant(),
-                Libelle = request.Libelle.Trim(), // <-- IL MANQUAIT CETTE LIGNE !
-                IsActive = true,
-                CreatedAt = DateTime.UtcNow,
-                Compte = request.Compte?.Trim()
-            };
+        var nouvelleBanque = new Banque
+        {
+            CodeBanque = request.CodeBanque.Trim().ToUpperInvariant(),
+            Filiale = request.Filiale.Trim().ToUpperInvariant(),
+            TypeFichier = request.TypeFichier?.Trim().ToUpperInvariant(),
+            Libelle = request.Libelle.Trim(), 
+            IsActive = true,
+            CreatedAt = DateTime.UtcNow,
+            Compte = request.Compte?.Trim()
+        };
 
-        // Sauvegarde en base de données
         await _dbContext.Banques.AddAsync(nouvelleBanque, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
 
-        // Retourne un statut 201 Created avec l'objet contenant son nouvel ID
         return CreatedAtAction(nameof(GetAll), new { id = nouvelleBanque.Id }, nouvelleBanque);
     }
 
-    // 3. POST : Importer des banques depuis un fichier Excel (Colonnes requises : CodeBanque, Libelle)
+    // 3. POST : Importer des banques depuis un fichier Excel
     [HttpPost("import-excel")]
     [Consumes("multipart/form-data")]
     [ProducesResponseType(typeof(BanqueImportResult), StatusCodes.Status200OK)]
@@ -78,19 +117,16 @@ public class BanqueController : ControllerBase
 
         try
         {
-            // 1. Lecture de toutes les lignes du fichier Excel via ExcelDataReader
             var rows = ReadWorksheetRows(file);
             if (rows == null || rows.Count == 0)
             {
                 return BadRequest(new { message = "Le fichier Excel ne contient aucune donnée." });
             }
 
-            // 2. Recherche de la ligne d'en-tête (index 0 ou dynamique)
             var headerRow = rows[0];
             var codeBanqueCol = FindColumnIndex(headerRow, "CodeBanque");
             var libelleCol = FindColumnIndex(headerRow, "Libelle");
 
-            // Fallbacks si les en-têtes ont des espaces ou des variations de casse
             if (codeBanqueCol < 0) codeBanqueCol = FindColumnIndex(headerRow, "Code Banque");
             if (libelleCol < 0) libelleCol = FindColumnIndex(headerRow, "Libellé");
 
@@ -99,7 +135,6 @@ public class BanqueController : ControllerBase
                 return BadRequest(new { message = "Une ou plusieurs colonnes requises (CodeBanque, Libelle) sont manquantes dans les en-têtes." });
             }
 
-            // 3. Extraction et normalisation des lignes de données
             var excelBanqueItems = new List<Banque>();
 
             for (int i = 1; i < rows.Count; i++)
@@ -108,13 +143,11 @@ public class BanqueController : ControllerBase
                 var codeBanque = GetCell(row, codeBanqueCol).Trim().ToUpperInvariant();
                 var libelle = GetCell(row, libelleCol).Trim();
 
-                // Ignorer la ligne si elle est totalement vide
                 if (string.IsNullOrWhiteSpace(codeBanque) && string.IsNullOrWhiteSpace(libelle))
                 {
                     continue;
                 }
 
-                // Clé métier obligatoire
                 if (string.IsNullOrWhiteSpace(codeBanque))
                 {
                     continue;
@@ -124,20 +157,18 @@ public class BanqueController : ControllerBase
                 {
                     CodeBanque = codeBanque,
                     Libelle = libelle,
-                    Filiale = "STANDARD",  // Valeurs par défaut pour les colonnes non présentes
-                    TypeFichier = "AFB120", // Valeurs par défaut adaptées à votre contexte
+                    Filiale = "STANDARD",  
+                    TypeFichier = "AFB120", 
                     IsActive = true,
                     CreatedAt = DateTime.UtcNow
                 });
             }
 
-            // Nettoyage des doublons à l'intérieur du fichier Excel lui-même
             var uniqueExcelItems = excelBanqueItems
                 .GroupBy(b => b.CodeBanque, StringComparer.OrdinalIgnoreCase)
                 .Select(g => g.First())
                 .ToList();
 
-            // 4. Récupération des codes banques existants en BDD pour filtrer
             var existingCodes = await _dbContext.Banques
                 .Select(b => b.CodeBanque)
                 .ToListAsync(cancellationToken);
@@ -146,7 +177,6 @@ public class BanqueController : ControllerBase
             var toInsert = new List<Banque>();
             var skippedExistingCount = 0;
 
-            // 5. Comparaison et isolation des nouveautés
             foreach (var item in uniqueExcelItems)
             {
                 if (existingSet.Contains(item.CodeBanque))
@@ -158,7 +188,6 @@ public class BanqueController : ControllerBase
                 toInsert.Add(item);
             }
 
-            // 6. Insertion en Base de Données
             int insertedCount = 0;
             if (toInsert.Count > 0)
             {
@@ -167,7 +196,6 @@ public class BanqueController : ControllerBase
                 insertedCount = toInsert.Count;
             }
 
-            // 7. Renvoi du rapport d'intégration
             return Ok(new BanqueImportResult
             {
                 TotalRowsProcessed = excelBanqueItems.Count,
@@ -181,7 +209,7 @@ public class BanqueController : ControllerBase
         }
     }
 
-    // --- EN-BAS : RECOPIE DES MÉTHODES UTILITAIRES EXCELDATAREADER ---
+    // --- EN-BAS : MÉTHODES UTILITAIRES EXCELDATAREADER ---
 
     private List<List<string>> ReadWorksheetRows(IFormFile file)
     {

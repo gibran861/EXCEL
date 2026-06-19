@@ -35,7 +35,20 @@ public class NEWFLUXCONTROLLER : ControllerBase
     }
 
 
+[HttpGet("{code}/libelle")]
+public async Task<ActionResult<string>> GetLibelleByCode(string code)
+{
+    // Recherche du flux par son code (Key) dans la base de données
+    var flux = await _dbContext.Flux.FindAsync(code);
 
+    if (flux == null)
+    {
+        return NotFound($"Aucun flux trouvé avec le code : {code}");
+    }
+
+    // Retourne uniquement le libellé
+    return Ok(flux.Libelle);
+}
 
     [HttpPost]
     [ProducesResponseType(typeof(NEWFlux), StatusCodes.Status201Created)]
