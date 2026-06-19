@@ -112,9 +112,9 @@ public async Task<ActionResult<List<Libelle>>> GetAll(CancellationToken cancella
 	}
 
 	[HttpGet("detect-categorie")]
-public async Task<IActionResult> DetectCategorie(string libelle,decimal transactionAmount )
+public async Task<IActionResult> DetectCategorie(string libelle,decimal transactionAmount,string bk )
 {
-    var result = await _libelleService.DetectCategorieAsync(libelle,transactionAmount);
+    var result = await _libelleService.DetectCategorieAsync(libelle,transactionAmount,bk);
     return Ok(result);
 }
 

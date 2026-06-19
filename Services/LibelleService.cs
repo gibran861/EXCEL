@@ -521,7 +521,8 @@ public class LibelleService
 
 public async Task<DetectCategorieResult> DetectCategorieAsync(
     string libelle,
-    decimal transactionAmount, // 💡 AJOUT : Le montant de la transaction actuelle
+    decimal transactionAmount, 
+    string currentBankCode,
     CancellationToken cancellationToken = default)
 {
     if (string.IsNullOrWhiteSpace(libelle))
@@ -530,41 +531,50 @@ public async Task<DetectCategorieResult> DetectCategorieAsync(
     // 1. Normalisation du libellé reçu
     var text = NormalizeKeyword(libelle).ToUpperInvariant();
 
-    // 2. Récupération dynamique des règles actives depuis la base de données
+    // 2. Récupération dynamique et TRIÉ des règles actives
+    // 💡 IDÉE CLÉ : On trie pour que les règles avec conditions de montants spécifiques 
+    // et de banques spécifiques soient évaluées EN PREMIER.
     var databaseMappings = await _dbContext.FluxMappings
         .Where(m => m.IsActive)
+        .OrderByDescending(m => !string.IsNullOrEmpty(m.BankCode)) // Les règles spécifiques à une banque d'abord
+        .ThenByDescending(m => !string.IsNullOrEmpty(m.Operator) && m.Operator.ToUpper() != "ANY") // Les règles avec filtres de montants d'abord
         .ToListAsync(cancellationToken);
 
-    // 3. Parcours des règles pour trouver une correspondance
+    // 3. Parcours des règles ordonnées
     foreach (var item in databaseMappings)
     {
         var keywordUpper = item.Keyword.ToUpperInvariant();
 
-        // Étape A : Si le libellé contient le mot-clé dynamique
+        // Étape A : Si le libellé contient le mot-clé dynamique (ex: "TRB2")
         if (text.Contains(keywordUpper))
         {
-            // Étape B : Vérification de la condition de montant (si spécifiée)
-            bool isAmountConditionValid = true;
+            // Étape B : Vérification du Code Banque
+            bool isBankValid = string.IsNullOrWhiteSpace(item.BankCode) || 
+                               item.BankCode.Equals(currentBankCode, StringComparison.OrdinalIgnoreCase);
 
-            // On extrait l'opérateur (par défaut "ANY" si null ou vide)
+            if (!isBankValid)
+                continue; // Ne correspond pas à cette banque, règle suivante.
+
+            // Étape C : Vérification de la condition de montant
+            bool isAmountConditionValid = true;
             string op = string.IsNullOrWhiteSpace(item.Operator) ? "ANY" : item.Operator.ToUpperInvariant();
             decimal targetAmt = item.TargetAmount ?? 0;
 
             if (op != "ANY")
             {
-                // On applique le filtre selon l'opérateur choisi
                 isAmountConditionValid = op switch
                 {
                     "<=" => transactionAmount <= targetAmt,
-                    ">=" => transactionAmount >= targetAmt,
                     "==" => transactionAmount == targetAmt,
+                    ">=" => transactionAmount >= targetAmt,
                     "<"  => transactionAmount < targetAmt,
                     ">"  => transactionAmount > targetAmt,
-                    _    => true // Si l'opérateur est inconnu, on ne bloque pas
+                    _    => true // Opérateur inconnu, on ne bloque pas
                 };
             }
 
-            // Si le mot-clé ET la condition de montant sont valides, on retourne le résultat
+            // Si toutes les conditions (Texte + Banque + Montant) sont validées à ce stade, 
+            // vu que la liste est triée du plus strict au plus général, c'est le match parfait !
             if (isAmountConditionValid)
             {
                 return new DetectCategorieResult
@@ -627,7 +637,7 @@ public async Task<ExcelFluxExtractResult> ExtractAndSaveFluxFromExcelAsync(IForm
     foreach (var libelle in distinctLibelles)
     {
         // On appelle ta méthode existante de détection de catégorie
-        var detectionResult = await DetectCategorieAsync(libelle,10, cancellationToken);
+        var detectionResult = await DetectCategorieAsync(libelle,10, "dd",cancellationToken);
         
         if (detectionResult != null && detectionResult.IsDetected && !string.IsNullOrWhiteSpace(detectionResult.Flux))
         {

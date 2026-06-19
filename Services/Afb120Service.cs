@@ -31,22 +31,21 @@ namespace AfbGenerator.Api.Services
         public int DecimalsNumber { get; set; } = 2;
     }
 
-    // Exception personnalisée capturable par un Middleware ou le contrôleur pour renvoyer un HTTP 422
-   public class MissingMappingItem
-{
-    public string OriginalLabel { get; set; } = string.Empty;
-    public decimal Amount { get; set; }
-}
-
-public class MissingMappingsException : Exception
-{
-    public List<MissingMappingItem> MissingKeywords { get; }
-    public MissingMappingsException(List<MissingMappingItem> missingKeywords) 
-        : base("Certains libellés n'ont pas de mapping flux défini.")
+    public class MissingMappingItem
     {
-        MissingKeywords = missingKeywords;
+        public string OriginalLabel { get; set; } = string.Empty;
+        public decimal Amount { get; set; }
     }
-}
+
+    public class MissingMappingsException : Exception
+    {
+        public List<MissingMappingItem> MissingKeywords { get; }
+        public MissingMappingsException(List<MissingMappingItem> missingKeywords) 
+            : base("Certains libellés n'ont pas de mapping flux défini.")
+        {
+            MissingKeywords = missingKeywords;
+        }
+    }
 
     public class Afb120Service
     {
@@ -72,6 +71,8 @@ public class MissingMappingsException : Exception
             var compteRowIndex = _libelleService.FindRowContaining(rows, "Compte courant");
             if (compteRowIndex < 0) throw new InvalidOperationException("Ligne 'Compte courant' introuvable.");
             var compteRow = rows[compteRowIndex];
+            
+            // bankCode contient la valeur brute de l'Excel, ex: "71000090006000000000"
             string bankCode = _libelleService.GetCell(compteRow, 1).Trim().Replace(" ", "");
             
             decimal.TryParse(_libelleService.GetCell(compteRow, 2).Trim(), out decimal initialBalance);
@@ -89,16 +90,30 @@ public class MissingMappingsException : Exception
             var libelleCol = _libelleService.FindColumnIndex(headerRow, "LIBELLE");
             var dateValeurCol = _libelleService.FindColumnIndex(headerRow, "DATE VALEUR");
             
-            var bankFluxConfig = await _context.Fluxes.Where(f => f.BankCode == bankCode).ToDictionaryAsync(f => f.FluxCode.Trim().ToUpperInvariant(), f => f, cancellationToken);
+            // 💡 RÉCUPÉRATION : Récupération de l'entité Banque via le numéro de compte complet
+            var banqueEntity = await _context.Banques
+                .FirstOrDefaultAsync(b => b.Compte == bankCode && b.IsActive, cancellationToken);
+
+            if (banqueEntity == null)
+                throw new InvalidOperationException($"Aucune banque active configurée avec le compte '{bankCode}' n'a été trouvée dans la base de données.");
+
+            string currentBankCode = banqueEntity.CodeBanque; // Contiendra le code court, ex: "AFB"
+
+            // 💡 CORRECTION : Filtrage dans la table Fluxes avec 'currentBankCode' ("AFB") au lieu du numéro de compte complet
+            var bankFluxConfig = await _context.Fluxes
+                .Where(f => f.BankCode == currentBankCode)
+                .ToDictionaryAsync(f => f.FluxCode.Trim().ToUpperInvariant(), f => f, cancellationToken);
+
             var activeCurrencies = await _currencyService.GetAllAsync(cancellationToken);
             var currencyDecimalsMap = activeCurrencies.ToDictionary(c => c.CUR_ID.Trim().ToUpperInvariant(), c => (int)c.DECIMALSNUMBER);
             
             var movements = new List<Afb120MovementRow>();
+
+            // Découpage pour la structure du fichier AFB120 (les entêtes de colonnes)
             string cleanBank = bankCode.Length >= 5 ? bankCode[0..5] : bankCode.PadRight(5);
             string cleanGuichet = bankCode.Length >= 10 ? bankCode[5..10] : "00000";
             string cleanRib = bankCode.Length >= 11 ? bankCode[10..] : "0"; 
 
-            // Liste pour collecter les libellés originaux non mappés uniques
             var missingKeywords = new List<MissingMappingItem>();
 
             foreach (var row in rows.Skip(headerRowIndex + 1))
@@ -120,27 +135,29 @@ public class MissingMappingsException : Exception
                 string cib1 = "  "; string cib2 = "    ";
                 
                 var normalizedLibelle = _libelleService.NormalizeKeyword(originalLibelle);
-                var detection = await _libelleService.DetectCategorieAsync(normalizedLibelle, amount, cancellationToken);
+
+                // On envoie le code court "AFB" au moteur de détection
+                var detection = await _libelleService.DetectCategorieAsync(normalizedLibelle, amount, currentBankCode, cancellationToken);
 
                 if (detection != null && detection.IsDetected && !string.IsNullOrWhiteSpace(detection.Flux))
                 {
                     var cleanFluxCode = detection.Flux.Trim().ToUpperInvariant();
                     if (bankFluxConfig.TryGetValue(cleanFluxCode, out var fluxSetup))
                     {
+                        // Extraction réussie de Cib1 et Cib2 depuis la configuration filtrée par le code "AFB"
                         cib1 = fluxSetup.Cib1 ?? "  ";
                         cib2 = fluxSetup.Cib2 ?? "    ";
                     }
                 }
                 else
                 {
-                    // Si non détecté, on garde en mémoire le libellé brut/original pour le proposer à l'utilisateur
                     if (!string.IsNullOrWhiteSpace(originalLibelle))
                     {
                         missingKeywords.Add(new MissingMappingItem 
-                { 
-                    OriginalLabel = originalLibelle, 
-                    Amount = amount 
-                });
+                        { 
+                            OriginalLabel = originalLibelle, 
+                            Amount = amount 
+                        });
                     }
                 }
 
@@ -164,18 +181,19 @@ public class MissingMappingsException : Exception
                 });
             }
 
-            // Bloquer la génération SI des libellés n'ont pas pu être associés
             if (missingKeywords.Any())
             {
-throw new MissingMappingsException(missingKeywords.OrderBy(k => k.OriginalLabel).ToList());
+                throw new MissingMappingsException(missingKeywords.OrderBy(k => k.OriginalLabel).ToList());
             }
 
             if (!movements.Any()) return new GenerateResultDto { Message = "Aucune transaction valide trouvée dans le fichier Excel.", TotalMouvements = 0 };
-movements = movements
-    .OrderBy(m => m.OperationDate ?? DateTime.MinValue)
-    .ThenBy(m => m.Label)
-    .ThenBy(m => m.Amount)
-    .ToList();
+            
+            movements = movements
+                .OrderBy(m => m.OperationDate ?? DateTime.MinValue)
+                .ThenBy(m => m.Label)
+                .ThenBy(m => m.Amount)
+                .ToList();
+
             string finalOutputDir = string.IsNullOrWhiteSpace(outputPath) ? @"C:\BankFiles\AFB120\" : outputPath;
             Directory.CreateDirectory(finalOutputDir);
 
