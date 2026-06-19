@@ -23,7 +23,8 @@ public string Libelle { get; set; } = string.Empty; // <-- Ajoutez cette ligne
 
     [StringLength(100)]
     public string? TypeFichier { get; set; } = string.Empty; // ex: "EXCEL_STD" ou "MT940"
-
+    [StringLength(50)]
+    public string? Compte { get; set; } = string.Empty;
     
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

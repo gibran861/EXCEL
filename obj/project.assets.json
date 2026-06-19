@@ -8963,11 +8963,11 @@
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "E:\\AFB EXCEL\\AfbGenerator.Api\\AfbGenerator.Api.csproj",
+      "projectUniqueName": "E:\\Github\\EXCEL\\AfbGenerator.Api\\AfbGenerator.Api.csproj",
       "projectName": "AfbGenerator.Api",
-      "projectPath": "E:\\AFB EXCEL\\AfbGenerator.Api\\AfbGenerator.Api.csproj",
+      "projectPath": "E:\\Github\\EXCEL\\AfbGenerator.Api\\AfbGenerator.Api.csproj",
       "packagesPath": "C:\\Users\\Administrator\\.nuget\\packages\\",
-      "outputPath": "E:\\AFB EXCEL\\AfbGenerator.Api\\obj\\",
+      "outputPath": "E:\\Github\\EXCEL\\AfbGenerator.Api\\obj\\",
       "projectStyle": "PackageReference",
       "configFilePaths": [
         "C:\\Users\\Administrator\\AppData\\Roaming\\NuGet\\NuGet.Config"

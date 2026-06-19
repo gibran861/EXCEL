@@ -52,7 +52,8 @@ public class BanqueController : ControllerBase
                 TypeFichier = request.TypeFichier?.Trim().ToUpperInvariant(),
                 Libelle = request.Libelle.Trim(), // <-- IL MANQUAIT CETTE LIGNE !
                 IsActive = true,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
+                Compte = request.Compte?.Trim()
             };
 
         // Sauvegarde en base de données
