@@ -27,3 +27,30 @@ public class FluxResponse
     public bool IsActive { get; set; }
     public DateTime CreatedAt { get; set; }
 }
+
+public class CreateFluxRequest2
+{
+
+    public string Code { get; set; } = string.Empty;
+
+
+    public string? TypeFlux { get; set; } = string.Empty;
+
+
+    public string Libelle { get; set; } = string.Empty;
+
+
+    public string? Sens { get; set; } = string.Empty;
+
+    public bool IsActive { get; set; } = true;
+}
+
+public class FluxResponse2
+{
+    public string Code { get; set; } = string.Empty;
+    public string TypeFlux { get; set; } = string.Empty;
+    public string Libelle { get; set; } = string.Empty;
+    public string Sens { get; set; } = string.Empty;
+    public bool IsActive { get; set; }
+    public DateTime CreatedAt { get; set; }
+}

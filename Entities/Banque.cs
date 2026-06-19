@@ -16,11 +16,11 @@ public class Banque
 [StringLength(250)]
 public string Libelle { get; set; } = string.Empty; // <-- Ajoutez cette ligne
 
-    [Required]
-    [StringLength(100)]
-    public string Filiale { get; set; } = string.Empty; // ex: "MALI"
 
-    [Required]
+    [StringLength(100)]
+    public string? Filiale { get; set; } = string.Empty; // ex: "MALI"
+
+
     [StringLength(100)]
     public string? TypeFichier { get; set; } = string.Empty; // ex: "EXCEL_STD" ou "MT940"
 

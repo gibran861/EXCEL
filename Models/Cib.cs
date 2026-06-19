@@ -16,3 +16,10 @@ public class CibResponse
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; }
 }
+
+public class CibImportResult
+{
+    public int TotalRowsProcessed { get; set; }
+    public int InsertedCount { get; set; }
+    public int SkippedExistingCount { get; set; }
+}

@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "Q9CS4DgMYMg=",
+  "dgSpecHash": "oy+z+S43bT4=",
   "success": true,
-  "projectFilePath": "C:\\Users\\Administrator\\Desktop\\khalil\\AFB\\AFB-EXCEL-Mali\\AfbGenerator.Api\\AfbGenerator.Api.csproj",
+  "projectFilePath": "E:\\AFB EXCEL\\AfbGenerator.Api\\AfbGenerator.Api.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\Administrator\\.nuget\\packages\\azure.core\\1.35.0\\azure.core.1.35.0.nupkg.sha512",
     "C:\\Users\\Administrator\\.nuget\\packages\\azure.identity\\1.10.3\\azure.identity.1.10.3.nupkg.sha512",

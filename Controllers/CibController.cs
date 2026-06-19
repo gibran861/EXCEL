@@ -40,21 +40,24 @@ public class CibController : ControllerBase
         }
     }
 
-    [HttpPost("import")]
-    public async Task<IActionResult> ImportExcel(IFormFile file, CancellationToken cancellationToken)
+  [HttpPost("import-excel")]
+    [Consumes("multipart/form-data")]
+    [ProducesResponseType(typeof(CibImportResult), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<CibImportResult>> ImportCibExcel(IFormFile file, CancellationToken cancellationToken)
     {
-        if (file == null || file.Length == 0)
+        try
         {
-            return BadRequest("Veuillez fournir un fichier Excel valide.");
+            var result = await _cibService.ImportCibDataAsync(file, cancellationToken);
+            return Ok(result);
         }
-
-        var (inserted, updated, errors) = await _cibService.ImportCibFromExcelAsync(file, cancellationToken);
-
-        if (errors.Any())
+        catch (ArgumentException ex)
         {
-            return BadRequest(new { Errors = errors });
+            return BadRequest(new { message = ex.Message });
         }
-
-        return Ok(new { Inserted = inserted, Updated = updated, Message = "Importation réussie." });
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
     }
 }

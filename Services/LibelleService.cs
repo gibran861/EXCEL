@@ -380,7 +380,7 @@ public class LibelleService
 		};
 	}
 
-	private static List<List<string>> ReadWorksheetRows(IFormFile file)
+	public  List<List<string>> ReadWorksheetRows(IFormFile file)
 	{
 		try
 		{
@@ -430,7 +430,7 @@ public class LibelleService
 		}
 	}
 
-	private static int FindHeaderRowIndex(List<List<string>> rows)
+	public  int FindHeaderRowIndex(List<List<string>> rows)
 	{
 		for (var rowIndex = 0; rowIndex < rows.Count; rowIndex++)
 		{
@@ -447,7 +447,7 @@ public class LibelleService
 		return -1;
 	}
 
-	private static int FindHeaderRowIndexContainingColumns(List<List<string>> rows, string firstHeader, string secondHeader)
+	public  int FindHeaderRowIndexContainingColumns(List<List<string>> rows, string firstHeader, string secondHeader)
 	{
 		for (var rowIndex = 0; rowIndex < rows.Count; rowIndex++)
 		{
@@ -464,7 +464,7 @@ public class LibelleService
 		return -1;
 	}
 
-	private static int FindRowContaining(List<List<string>> rows, string searchText)
+	public  int FindRowContaining(List<List<string>> rows, string searchText)
 	{
 		for (var rowIndex = 0; rowIndex < rows.Count; rowIndex++)
 		{
@@ -480,7 +480,7 @@ public class LibelleService
 		return -1;
 	}
 
-	private static int FindColumnIndex(List<string> row, string expectedHeader)
+	public  int FindColumnIndex(List<string> row, string expectedHeader)
 	{
 		for (var columnIndex = 0; columnIndex < row.Count; columnIndex++)
 		{
@@ -493,7 +493,7 @@ public class LibelleService
 		return -1;
 	}
 
-	private static string GetCell(List<string> row, int columnIndex)
+	public  string GetCell(List<string> row, int columnIndex)
 	{
 		if (columnIndex < 0 || columnIndex >= row.Count)
 		{
@@ -503,7 +503,7 @@ public class LibelleService
 		return row[columnIndex];
 	}
 
-	private static void EnsureEncodingProviderRegistered()
+	public  void EnsureEncodingProviderRegistered()
 	{
 		if (_encodingProviderRegistered)
 		{
@@ -514,7 +514,7 @@ public class LibelleService
 		_encodingProviderRegistered = true;
 	}
 
-	private static string NormalizeKeyword(string value)
+	public  string NormalizeKeyword(string value)
 	{
 		return string.Join(' ', value.Split(' ', StringSplitOptions.RemoveEmptyEntries)).Trim();
 	}
@@ -534,7 +534,7 @@ public class LibelleService
     {
         (
             "CHEQUE EMIS",
-            "DECA",
+            "DEP1",
             new[]
             {
                 "CHQ",
@@ -550,7 +550,7 @@ public class LibelleService
 
         (
             "VIREMENT SALAIRE",
-            "DECA",
+            "DEP1",
             new[]
             {
                 "VIREMENT SALAIRE",
@@ -561,7 +561,7 @@ public class LibelleService
 
         (
             "APPRO COMPTE",
-            "DECA",
+            "BBR1",
             new[]
             {
                 "APPRO COMPTE",
@@ -571,7 +571,7 @@ public class LibelleService
 
         (
             "FRAIS BANCAIRES",
-            "DECA",
+            "AFEE",
             new[]
             {
                 "FRAIS GESTION",
@@ -585,20 +585,22 @@ public class LibelleService
 
         (
             "FRAIS VIREMENT",
-            "DECA",
+            "FEE",
             new[]
             {
                 "FRAIS VRT",
                 "FRAIS VIRMNT",
                 "FRAIS INTERBANCAIRE",
                 "FRAIS / VIREMENT",
-                "DEBIT FRAIS VRT"
+				"FRAIS COMPTE",
+                "DEBIT FRAIS VRT",
+				"DEBIT"
             }
         ),
 
         (
             "FRAIS CHEQUE CERTIF",
-            "DECA",
+            "C/EN",
             new[]
             {
                 "COMMISS°CERTIF CHQ",
@@ -610,7 +612,7 @@ public class LibelleService
 
         (
             "VIREMENT TIERS",
-            "DECA",
+            "BBD1",
             new[]
             {
                 "VIRT",
@@ -626,7 +628,7 @@ public class LibelleService
 
         (
             "INDEMNITE CONGES",
-            "DECA",
+            "BBD1",
             new[]
             {
                 "INDEMNITE CONGES",
@@ -646,7 +648,7 @@ public class LibelleService
 
         (
             "VERSEMENT ESPECES",
-            "ENC",
+            "REC1 ",
             new[]
             {
                 "VERSEMENT ESPECE",
@@ -659,7 +661,7 @@ public class LibelleService
 
         (
             "CHEQUE RECU",
-            "ENC",
+            "ENCH ",
             new[]
             {
                 "REMISE CHEQUE",
@@ -670,7 +672,7 @@ public class LibelleService
 
         (
             "VIREMENT RECU",
-            "ENC",
+            "CLVIR  ",
             new[]
             {
                 "TRANSF PR MOBILE",
@@ -682,10 +684,21 @@ public class LibelleService
 
         (
             "REJET CHQ RECU",
-            "ENC",
+            "ADJT",
             new[]
             {
                 "REJET COMPENSE"
+            }
+        ),
+		        (
+            "TRAITE CLIENT",
+            "Trait",
+            new[]
+            {
+                "TRAITE CLIENT",
+				"TRAITE",
+				"REMISE TRAITE"
+				
             }
         )
     };
@@ -714,6 +727,104 @@ public class LibelleService
     {
         Libelle = libelle,
         IsDetected = false
+    };
+}
+
+public async Task<ExcelFluxExtractResult> ExtractAndSaveFluxFromExcelAsync(IFormFile file, CancellationToken cancellationToken = default)
+{
+    if (file == null || file.Length == 0)
+        throw new ArgumentException("Le fichier Excel est obligatoire.");
+
+    // 1. Lecture du fichier et extraction du compte courant (BankCode)
+    var rows = ReadWorksheetRows(file);
+
+    var compteRowIndex = FindRowContaining(rows, "Compte courant");
+    if (compteRowIndex < 0)
+        throw new InvalidOperationException("La ligne contenant 'Compte courant' est introuvable.");
+
+    // Récupération du numéro de compte (index 1 d'après ton exemple)
+    string bankCode = GetCell(rows[compteRowIndex], 1).Trim();
+    if (string.IsNullOrWhiteSpace(bankCode))
+        throw new InvalidOperationException("Le numéro de compte (BankCode) n'a pas pu être extrait.");
+
+    // 2. Recherche de l'entête des transactions
+    var headerRowIndex = FindHeaderRowIndex(rows);
+    if (headerRowIndex < 0)
+        throw new InvalidOperationException("L'entête des transactions est introuvable.");
+
+    var headerRow = rows[headerRowIndex];
+    var libelleCol = FindColumnIndex(headerRow, "LIBELLE");
+    if (libelleCol < 0)
+        throw new InvalidOperationException("La colonne 'LIBELLE' est manquante.");
+
+    // 3. Extraction et dédoublonnement des Libellés du fichier Excel
+    var distinctLibelles = rows
+        .Skip(headerRowIndex + 1)
+        .Select(row => NormalizeKeyword(GetCell(row, libelleCol)))
+        .Where(libelle => !string.IsNullOrWhiteSpace(libelle))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    // 4. Détection des codes Flux uniques pour ce fichier
+    var uniqueFluxCodesInFile = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    
+    foreach (var libelle in distinctLibelles)
+    {
+        // On appelle ta méthode existante de détection de catégorie
+        var detectionResult = await DetectCategorieAsync(libelle, cancellationToken);
+        
+        if (detectionResult != null && detectionResult.IsDetected && !string.IsNullOrWhiteSpace(detectionResult.Flux))
+        {
+            // On nettoie la chaîne au cas où il y aurait des espaces (ex: "CLVIR  ")
+            uniqueFluxCodesInFile.Add(detectionResult.Flux.Trim());
+        }
+    }
+
+    // 5. Vérification de l'existence en Base de Données pour éviter les doublons
+    // On cherche les flux déjà existants pour cette banque spécifique
+    var existingFluxCodesInDb = await _dbContext.Fluxes
+        .Where(f => f.BankCode == bankCode)
+        .Select(f => f.FluxCode)
+        .ToListAsync(cancellationToken);
+
+    var existingFluxSet = new HashSet<string>(existingFluxCodesInDb, StringComparer.OrdinalIgnoreCase);
+
+    // 6. Préparation des entités à insérer
+    var fluxesToInsert = new List<Flux>();
+    int skippedCount = 0;
+
+    foreach (var fluxCode in uniqueFluxCodesInFile)
+    {
+        if (existingFluxSet.Contains(fluxCode))
+        {
+            skippedCount++;
+            continue;
+        }
+
+        fluxesToInsert.Add(new Flux
+        {
+            BankCode = bankCode,
+            FluxCode = fluxCode,
+            FluxLabel = $"Flux {fluxCode}", // Label générique par défaut ou à adapter
+            IsActive = true,
+            CreatedAt = DateTime.UtcNow
+        });
+    }
+
+    // 7. Enregistrement en Base de Données
+    if (fluxesToInsert.Count > 0)
+    {
+        await _dbContext.Fluxes.AddRangeAsync(fluxesToInsert, cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    // 8. Retour du résultat
+    return new ExcelFluxExtractResult
+    {
+        BankCode = bankCode,
+        InsertedFluxCount = fluxesToInsert.Count,
+        SkippedFluxCount = skippedCount,
+        DetectedFluxCodes = uniqueFluxCodesInFile.ToList()
     };
 }
 }

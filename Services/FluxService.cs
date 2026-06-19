@@ -14,55 +14,98 @@ public class FluxService
 	{
 		_dbContext = dbContext;
 	}
+public async Task<FluxResponse2> CreateFluxAsync(CreateFluxRequest2 request, CancellationToken cancellationToken = default)
+    {
+        // 1. Validations de base (au cas où la validation automatique du contrôleur ne suffit pas)
+        if (string.IsNullOrWhiteSpace(request.Code))
+            throw new ArgumentException("Le code est obligatoire.");
 
+        var normalizedCode = request.Code.Trim().ToUpperInvariant();
+
+        // 2. Vérification des doublons en BDD (le Code est la clé primaire)
+        var exists = await _dbContext.Flux.AnyAsync(x => x.Code == normalizedCode, cancellationToken);
+        if (exists)
+        {
+            throw new InvalidOperationException($"Le flux avec le code '{normalizedCode}' existe déjà.");
+        }
+
+        // 3. Cartographie (Mapping) vers l'entité
+        var newFlux = new NEWFlux
+        {
+            Code = normalizedCode,
+            TypeFlux = request.TypeFlux.Trim(),
+            Libelle = request.Libelle.Trim(),
+            Sens = request.Sens.Trim().ToUpperInvariant(),
+            IsActive = request.IsActive,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        // 4. Ajout et sauvegarde
+        _dbContext.Flux.Add(newFlux);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        // 5. Retour du résultat mappé en FluxResponse
+        return new FluxResponse2
+        {
+            Code = newFlux.Code,
+            TypeFlux = newFlux.TypeFlux,
+            Libelle = newFlux.Libelle,
+            Sens = newFlux.Sens,
+            IsActive = newFlux.IsActive,
+            CreatedAt = newFlux.CreatedAt
+        };
+    }
+
+    public async Task DeleteAsync(int id, CancellationToken cancellationToken)
+{
+    var flux = await _dbContext.Fluxes.FindAsync(new object[] { id }, cancellationToken);
+    if (flux == null) 
+        throw new KeyNotFoundException($"Le flux avec l'ID {id} n'existe pas.");
+
+    _dbContext.Fluxes.Remove(flux);
+    await _dbContext.SaveChangesAsync(cancellationToken);
+}
 	public async Task<FluxResponse> CreateAsync(CreateFluxRequest request, CancellationToken cancellationToken = default)
-	{
-		if (string.IsNullOrWhiteSpace(request.FluxCode))
-		{
-			throw new ArgumentException("FluxCode is required.");
-		}
+{
+    if (string.IsNullOrWhiteSpace(request.FluxCode))
+    {
+        throw new ArgumentException("FluxCode is required.");
+    }
 
-		if (string.IsNullOrWhiteSpace(request.FluxLabel))
-		{
-			throw new ArgumentException("FluxLabel is required.");
-		}
+    if (string.IsNullOrWhiteSpace(request.BankCode))
+    {
+        throw new ArgumentException("BankCode is required.");
+    }
 
-		if (string.IsNullOrWhiteSpace(request.BankCode))
-		{
-			throw new ArgumentException("BankCode is required.");
-		}
+    var normalizedFluxCode = request.FluxCode.Trim();
+    var normalizedBankCode = request.BankCode.Trim();
 
-		if (string.IsNullOrWhiteSpace(request.Cib1) || string.IsNullOrWhiteSpace(request.Cib2))
-		{
-			throw new ArgumentException("Cib1 and Cib2 are required.");
-		}
+    // ── CORRECTION ICI : On vérifie si la COMBINAISON existe déjà ──
+    var exists = await _dbContext.Fluxes
+        .AnyAsync(x => x.FluxCode == normalizedFluxCode && x.BankCode == normalizedBankCode, cancellationToken);
 
-		var normalizedCode = request.FluxCode.Trim();
+    if (exists)
+    {
+        throw new InvalidOperationException($"A flux with code '{normalizedFluxCode}' already exists for bank '{normalizedBankCode}'.");
+    }
 
-		var exists = await _dbContext.Fluxes
-			.AnyAsync(x => x.FluxCode == normalizedCode, cancellationToken);
+    var flux = new Flux
+    {
+        FluxCode = normalizedFluxCode,
+        BankCode = normalizedBankCode,
+        // Sécurisation contre les valeurs nulles venant du Front
+        FluxLabel = string.IsNullOrWhiteSpace(request.FluxLabel) ? normalizedFluxCode : request.FluxLabel.Trim(),
+        Cib1 = request.Cib1?.Trim() ?? string.Empty,
+        Cib2 = request.Cib2?.Trim() ?? string.Empty,
+        IsActive = request.IsActive,
+        CreatedAt = DateTime.UtcNow
+    };
 
-		if (exists)
-		{
-			throw new InvalidOperationException($"Flux with code '{normalizedCode}' already exists.");
-		}
+    _dbContext.Fluxes.Add(flux);
+    await _dbContext.SaveChangesAsync(cancellationToken);
 
-		var flux = new Flux
-		{
-			FluxCode = normalizedCode,
-			FluxLabel = request.FluxLabel.Trim(),
-			BankCode = request.BankCode.Trim(),
-			Cib1 = request.Cib1.Trim(),
-			Cib2 = request.Cib2.Trim(),
-			IsActive = request.IsActive,
-			CreatedAt = DateTime.UtcNow
-		};
-
-		_dbContext.Fluxes.Add(flux);
-		await _dbContext.SaveChangesAsync(cancellationToken);
-
-		return Map(flux);
-	}
+    return Map(flux);
+}
 
 	public async Task<List<FluxResponse>> GetAllAsync(CancellationToken cancellationToken = default)
 	{
@@ -81,7 +124,47 @@ public class FluxService
 			})
 			.ToListAsync(cancellationToken);
 	}
+public async Task<FluxResponse> SetCibByBankAndFluxAsync(
+    string bankCode, 
+    string fluxCode, 
+    string cib1, 
+    string cib2, 
+    CancellationToken cancellationToken = default)
+{
+    if (string.IsNullOrWhiteSpace(bankCode))
+        throw new ArgumentException("Le code banque est obligatoire.");
 
+    if (string.IsNullOrWhiteSpace(fluxCode))
+        throw new ArgumentException("Le code flux est obligatoire.");
+
+    // Recherche de la ligne spécifique associant cette banque ET ce flux
+    var fluxEntity = await _dbContext.Fluxes
+        .FirstOrDefaultAsync(x => x.BankCode == bankCode && x.FluxCode == fluxCode, cancellationToken);
+
+    if (fluxEntity == null)
+    {
+        throw new KeyNotFoundException($"Le flux '{fluxCode}' pour la banque '{bankCode}' est introuvable.");
+    }
+
+    // Mise à jour des valeurs CIB
+    fluxEntity.Cib1 = cib1 ?? string.Empty;
+    fluxEntity.Cib2 = cib2 ?? string.Empty;
+
+    // Sauvegarde en base de données
+    await _dbContext.SaveChangesAsync(cancellationToken);
+
+    // Retour de la réponse mappée (à adapter selon ta structure réelle de FluxResponse)
+    return new FluxResponse
+    {
+        Id = fluxEntity.Id,
+        BankCode = fluxEntity.BankCode,
+        FluxCode = fluxEntity.FluxCode,
+        FluxLabel = fluxEntity.FluxLabel,
+        Cib1 = fluxEntity.Cib1,
+        Cib2 = fluxEntity.Cib2,
+        IsActive = fluxEntity.IsActive
+    };
+}
 	public async Task<FluxResponse> SetCibByFluxCodeAsync(string fluxCode, string cib1, string cib2, CancellationToken cancellationToken = default)
 	{
 		if (string.IsNullOrWhiteSpace(fluxCode))

@@ -117,4 +117,6 @@ public async Task<IActionResult> DetectCategorie(string libelle)
     var result = await _libelleService.DetectCategorieAsync(libelle);
     return Ok(result);
 }
+
+
 }

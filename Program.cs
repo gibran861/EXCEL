@@ -19,6 +19,19 @@ builder.Services.AddScoped<FluxService>();
 builder.Services.AddScoped<LibelleService>();
 builder.Services.AddScoped<XrtSyncService>();
 builder.Services.AddScoped<CibService>();
+builder.Services.AddScoped<Afb120Service>();
+builder.Services.AddScoped<CurrencyService>();
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowAll",
+        policy =>
+        {
+            policy.AllowAnyOrigin()
+                  .AllowAnyMethod()
+                  .AllowAnyHeader();
+        });
+});
 var app = builder.Build();
 
 using (var scope = app.Services.CreateScope())
@@ -33,6 +46,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+app.UseCors("AllowAll");
 
 app.UseHttpsRedirection();
 

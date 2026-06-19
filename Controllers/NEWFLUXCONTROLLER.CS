@@ -4,7 +4,7 @@ using AfbGenerator.Api.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-
+using AfbGenerator.Api.Models;
 namespace AfbGenerator.Api.Controllers;
 
 [ApiController]
@@ -34,6 +34,53 @@ public class NEWFLUXCONTROLLER : ControllerBase
         return Ok(fluxList);
     }
 
+
+
+
+    [HttpPost]
+    [ProducesResponseType(typeof(NEWFlux), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<NEWFlux>> Add(
+        [FromBody] NEWFlux request,
+        CancellationToken cancellationToken)
+    {
+        if (!ModelState.IsValid)
+        {
+            return BadRequest(ModelState);
+        }
+
+
+        // Vérifier si le code existe déjà
+        var existe = await _dbContext.Flux
+            .AnyAsync(x => x.Code == request.Code, cancellationToken);
+
+        if (existe)
+        {
+            return BadRequest($"Le flux {request.Code} existe déjà");
+        }
+
+
+        var nouveauFlux = new NEWFlux
+        {
+            Code = request.Code.Trim().ToUpperInvariant(),
+            TypeFlux = request.TypeFlux.Trim().ToUpperInvariant(),
+            Libelle = request.Libelle.Trim(),
+            Sens = request.Sens.Trim().ToUpperInvariant(),
+            IsActive = true,
+            CreatedAt = DateTime.UtcNow
+        };
+
+
+        await _dbContext.Flux.AddAsync(nouveauFlux, cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+
+        return CreatedAtAction(
+            nameof(GetAll),
+            new { code = nouveauFlux.Code },
+            nouveauFlux
+        );
+    }
     // 2. POST : Importer les flux via un fichier Excel
     [HttpPost("import-excel")]
     [ProducesResponseType(StatusCodes.Status200OK)]

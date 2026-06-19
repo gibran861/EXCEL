@@ -10,7 +10,7 @@ public class XrtDbContext : DbContext
     }
 
     public DbSet<XrtFlow> XrtFlows => Set<XrtFlow>();
-
+    public DbSet<GS_CUR> GS_CUR { get; set; }
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -24,5 +24,13 @@ public class XrtDbContext : DbContext
             entity.Property(e => e.FlowsctsId).HasColumnName("FLOWSCTS_ID");
             entity.Property(e => e.Direction).HasColumnName("DIRECTION");
         });
+
+        modelBuilder.Entity<GS_CUR>(entity =>
+            {
+                entity.ToTable("GS_CUR", "dbo"); // Spécifie le nom de la table et le schéma
+                entity.HasKey(e => e.CUR_ID);    // Définit CUR_ID comme clé primaire
+                
+                
+            });
     }
 }
