@@ -28,17 +28,27 @@ namespace AfbGenerator.Api.Services
         public string? Reference { get; set; }
         public string? Cib1 { get; set; }
         public string? Cib2 { get; set; }
-        public int DecimalsNumber { get; set; } = 2; // Dynamisé lors du parcours
+        public int DecimalsNumber { get; set; } = 2;
+    }
+
+    // Exception personnalisée capturable par un Middleware ou le contrôleur pour renvoyer un HTTP 422
+    public class MissingMappingsException : Exception
+    {
+        public List<string> MissingKeywords { get; }
+        public MissingMappingsException(List<string> missingKeywords) 
+            : base("Certains libellés n'ont pas de mapping flux défini.")
+        {
+            MissingKeywords = missingKeywords;
+        }
     }
 
     public class Afb120Service
     {
         private readonly AppDbContext _context;
         private readonly LibelleService _libelleService; 
-        private readonly CurrencyService _currencyService; // 1. Ajout du service de devises
+        private readonly CurrencyService _currencyService;
         private readonly ILogger<Afb120Service> _logger;
 
-        // 2. Injection du CurrencyService dans le constructeur
         public Afb120Service(AppDbContext context, LibelleService libelleService, CurrencyService currencyService, ILogger<Afb120Service> logger)
         {
             _context = context;
@@ -57,12 +67,13 @@ namespace AfbGenerator.Api.Services
             if (compteRowIndex < 0) throw new InvalidOperationException("Ligne 'Compte courant' introuvable.");
             var compteRow = rows[compteRowIndex];
             string bankCode = _libelleService.GetCell(compteRow, 1).Trim().Replace(" ", "");
-            decimal initialBalance = 0;
-            decimal.TryParse(_libelleService.GetCell(compteRow, 2).Trim(), out initialBalance);
+            
+            decimal.TryParse(_libelleService.GetCell(compteRow, 2).Trim(), out decimal initialBalance);
             string rawFileStartDate = _libelleService.GetCell(compteRow, 4).Trim(); 
             string rawFileEndDate = _libelleService.GetCell(compteRow, 5).Trim();   
             DateTime fileStartDate = DateTime.TryParse(rawFileStartDate, out var parsedStart) ? parsedStart : DateTime.Now;
             DateTime fileEndDate = DateTime.TryParse(rawFileEndDate, out var parsedEnd) ? parsedEnd : DateTime.Now;
+            
             var headerRowIndex = _libelleService.FindHeaderRowIndex(rows);
             if (headerRowIndex < 0) throw new InvalidOperationException("Entête des transactions introuvable.");
             var headerRow = rows[headerRowIndex];
@@ -73,14 +84,16 @@ namespace AfbGenerator.Api.Services
             var dateValeurCol = _libelleService.FindColumnIndex(headerRow, "DATE VALEUR");
             
             var bankFluxConfig = await _context.Fluxes.Where(f => f.BankCode == bankCode).ToDictionaryAsync(f => f.FluxCode.Trim().ToUpperInvariant(), f => f, cancellationToken);
-            
-            // 3. Performance : Récupération de toutes les devises et leurs décimales en une seule fois
             var activeCurrencies = await _currencyService.GetAllAsync(cancellationToken);
             var currencyDecimalsMap = activeCurrencies.ToDictionary(c => c.CUR_ID.Trim().ToUpperInvariant(), c => (int)c.DECIMALSNUMBER);
+            
             var movements = new List<Afb120MovementRow>();
             string cleanBank = bankCode.Length >= 5 ? bankCode[0..5] : bankCode.PadRight(5);
             string cleanGuichet = bankCode.Length >= 10 ? bankCode[5..10] : "00000";
             string cleanRib = bankCode.Length >= 11 ? bankCode[10..] : "0"; 
+
+            // Liste pour collecter les libellés originaux non mappés uniques
+            var missingKeywords = new HashSet<string>();
 
             foreach (var row in rows.Skip(headerRowIndex + 1))
             {
@@ -97,10 +110,12 @@ namespace AfbGenerator.Api.Services
                 amount = Math.Abs(amount); 
                 DateTime? opDate = DateTime.TryParse(rawDateOp, out var d1) ? d1 : (DateTime?)null;
                 DateTime? valDate = DateTime.TryParse(rawDateVal, out var d2) ? d2 : (DateTime?)null;
+                
                 string cib1 = "  "; string cib2 = "    ";
                 
                 var normalizedLibelle = _libelleService.NormalizeKeyword(originalLibelle);
                 var detection = await _libelleService.DetectCategorieAsync(normalizedLibelle, cancellationToken);
+                
                 if (detection != null && detection.IsDetected && !string.IsNullOrWhiteSpace(detection.Flux))
                 {
                     var cleanFluxCode = detection.Flux.Trim().ToUpperInvariant();
@@ -110,8 +125,15 @@ namespace AfbGenerator.Api.Services
                         cib2 = fluxSetup.Cib2 ?? "    ";
                     }
                 }
+                else
+                {
+                    // Si non détecté, on garde en mémoire le libellé brut/original pour le proposer à l'utilisateur
+                    if (!string.IsNullOrWhiteSpace(originalLibelle))
+                    {
+                        missingKeywords.Add(originalLibelle);
+                    }
+                }
 
-                // 4. Résolution dynamique de la décimale via la Map (par défaut 2 si absente de la base)
                 string cleanDevise = devise.Trim().ToUpperInvariant();
                 int dynamicDecimals = currencyDecimalsMap.TryGetValue(cleanDevise, out var dbDecimals) ? dbDecimals : 2;
 
@@ -128,8 +150,14 @@ namespace AfbGenerator.Api.Services
                     Label = originalLibelle.Length > 33 ? originalLibelle[..33] : originalLibelle, 
                     Cib1 = cib1, 
                     Cib2 = cib2, 
-                    DecimalsNumber = dynamicDecimals // Affectation dynamique
+                    DecimalsNumber = dynamicDecimals
                 });
+            }
+
+            // Bloquer la génération SI des libellés n'ont pas pu être associés
+            if (missingKeywords.Any())
+            {
+                throw new MissingMappingsException(missingKeywords.OrderBy(k => k).ToList());
             }
 
             if (!movements.Any()) return new GenerateResultDto { Message = "Aucune transaction valide trouvée dans le fichier Excel.", TotalMouvements = 0 };
@@ -142,13 +170,11 @@ namespace AfbGenerator.Api.Services
             var sb = new StringBuilder();
             var first = movements.First();
 
-            // Line 01 utilisant le nombre de décimales de la première transaction
             string openSens = initialBalance >= 0 ? "C" : "D";
             var line01 = BuildLine01(first.BankCode, first.Guichet, first.Rib2, first.Currency, first.DecimalsNumber, fileStartDate, Math.Abs(initialBalance), openSens);
             AssertLength(line01, "01", bankCode);
             sb.AppendLine(line01);
 
-            // Lignes 04
             var seenLine04 = new HashSet<string>();
             foreach (var row in movements)
             {
@@ -157,7 +183,6 @@ namespace AfbGenerator.Api.Services
                 if (seenLine04.Add(line04)) sb.AppendLine(line04);
             }
 
-            // Line 07
             var totalCredit = movements.Where(r => r.Sens == "C").Sum(r => r.Amount);
             var totalDebit = movements.Where(r => r.Sens == "D").Sum(r => r.Amount);
             var closingBalance = initialBalance + totalCredit - totalDebit;
@@ -183,9 +208,6 @@ namespace AfbGenerator.Api.Services
             return result;
         }
 
-        // =========================================================================
-        // LES FORMATEURS AFB120
-        // =========================================================================
         private static string FormatDecimals(int? decimals) => (decimals ?? 2).ToString();
 
         private static string FormatAmountAfb120(decimal amount, string sens, int decimals = 2)
