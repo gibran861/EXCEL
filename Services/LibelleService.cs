@@ -519,210 +519,42 @@ public class LibelleService
 		return string.Join(' ', value.Split(' ', StringSplitOptions.RemoveEmptyEntries)).Trim();
 	}
 
-	public async Task<DetectCategorieResult> DetectCategorieAsync(
+public async Task<DetectCategorieResult> DetectCategorieAsync(
     string libelle,
     CancellationToken cancellationToken = default)
 {
     if (string.IsNullOrWhiteSpace(libelle))
         throw new ArgumentException("Libelle obligatoire");
 
-
+    // 1. Normalisation du libellé reçu
     var text = NormalizeKeyword(libelle).ToUpperInvariant();
 
+    // 2. Récupération dynamique des règles depuis la base de données
+    // Idéalement, appliquez un cache ici pour ne pas interroger la BDD à chaque ligne de relevé
+    var databaseMappings = await _dbContext.FluxMappings
+        .Where(m => m.IsActive)
+        .ToListAsync(cancellationToken);
 
-    var categories = new List<(string Categorie, string Flux, string[] Keywords)>
+    // 3. Parcours des règles pour trouver une correspondance
+    foreach (var item in databaseMappings)
     {
-        (
-            "CHEQUE EMIS",
-            "DEP1",
-            new[]
-            {
-                "CHQ",
-                "CHEQUE",
-                "REMISE CHQ",
-                "REGL CHQ",
-                "RETRAIT CHQ",
-                "RTRT CHQ",
-                "DEPOT CHQ",
-                "CERTIF CHQ"
-            }
-        ),
+        var keywordUpper = item.Keyword.ToUpperInvariant();
 
-        (
-            "VIREMENT SALAIRE",
-            "DEP1",
-            new[]
-            {
-                "VIREMENT SALAIRE",
-                "VIREMENT SALAIRES",
-                "SALAIRE"
-            }
-        ),
-
-        (
-            "APPRO COMPTE",
-            "BBR1",
-            new[]
-            {
-                "APPRO COMPTE",
-                "APPRO CPTE"
-            }
-        ),
-
-        (
-            "FRAIS BANCAIRES",
-            "AFEE",
-            new[]
-            {
-                "FRAIS GESTION",
-                "FRAIS TENUE",
-                "TAF-FRAI",
-                "TAF FRAIS",
-                "TARIF FRAIS",
-                "FRAIS OMNI"
-            }
-        ),
-
-        (
-            "FRAIS VIREMENT",
-            "FEE",
-            new[]
-            {
-                "FRAIS VRT",
-                "FRAIS VIRMNT",
-                "FRAIS INTERBANCAIRE",
-                "FRAIS / VIREMENT",
-				"FRAIS COMPTE",
-                "DEBIT FRAIS VRT",
-				"DEBIT"
-            }
-        ),
-
-        (
-            "FRAIS CHEQUE CERTIF",
-            "C/EN",
-            new[]
-            {
-                "COMMISS°CERTIF CHQ",
-                "TAXE CERTIF CHQ",
-                "NIF TRSF CHQ",
-                "ANNULAT°RM CHQ"
-            }
-        ),
-
-        (
-            "VIREMENT TIERS",
-            "BBD1",
-            new[]
-            {
-                "VIRT",
-                "VIRMNT",
-                "VIREMENT",
-                "TRF DE FONDS",
-                "TRANSFERT DE FONDS",
-                "TRSF",
-                "COMMISSION/PAIEMENT",
-                "SOLDE TT COMPTE"
-            }
-        ),
-
-        (
-            "INDEMNITE CONGES",
-            "BBD1",
-            new[]
-            {
-                "INDEMNITE CONGES",
-                "CONGE"
-            }
-        ),
-
-        (
-            "CASH MOBILE",
-            "DECA",
-            new[]
-            {
-                "CASH CLIENT PR MOBILE",
-                "CASH MOBILE"
-            }
-        ),
-
-        (
-            "VERSEMENT ESPECES",
-            "REC1 ",
-            new[]
-            {
-                "VERSEMENT ESPECE",
-                "VERSEMENT ESP",
-                "VERS ESP",
-                "VERS ESPECES",
-                "VERST ESPECE"
-            }
-        ),
-
-        (
-            "CHEQUE RECU",
-            "ENCH ",
-            new[]
-            {
-                "REMISE CHEQUE",
-                "REMISE CHQ",
-                "REMISE CHEQ"
-            }
-        ),
-
-        (
-            "VIREMENT RECU",
-            "CLVIR  ",
-            new[]
-            {
-                "TRANSF PR MOBILE",
-                "TRSF MOBILE",
-                "TRF FOND",
-                "VIREMENT RECU"
-            }
-        ),
-
-        (
-            "REJET CHQ RECU",
-            "ADJT",
-            new[]
-            {
-                "REJET COMPENSE"
-            }
-        ),
-		        (
-            "TRAITE CLIENT",
-            "Trait",
-            new[]
-            {
-                "TRAITE CLIENT",
-				"TRAITE",
-				"REMISE TRAITE"
-				
-            }
-        )
-    };
-
-
-    foreach(var item in categories)
-    {
-        foreach(var keyword in item.Keywords)
+        // Si le libellé contient le mot-clé dynamique
+        if (text.Contains(keywordUpper))
         {
-            if(text.Contains(keyword.ToUpperInvariant()))
+            return new DetectCategorieResult
             {
-                return new DetectCategorieResult
-                {
-                    Libelle = libelle,
-                    IsDetected = true,
-                    Categorie = item.Categorie,
-                    Flux = item.Flux,
-                    MotCleDetecte = keyword
-                };
-            }
+                Libelle = libelle,
+                IsDetected = true,
+           
+                Flux = item.Flux,
+                MotCleDetecte = item.Keyword // Renvoie le mot-clé d'origine enregistré
+            };
         }
     }
 
-
+    // Aucun mot-clé trouvé
     return new DetectCategorieResult
     {
         Libelle = libelle,

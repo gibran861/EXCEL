@@ -16,13 +16,32 @@ public class AFBController : ControllerBase
     }
 
   [HttpPost("generate")]
-public async Task<IActionResult> GenerateFromExcel([FromForm] AfbUploadRequest request, CancellationToken cancellationToken)
-{
-    if (request.File == null || request.File.Length == 0)
-        return BadRequest("Le fichier Excel est obligatoire.");
-
-    // On passe request.OutputPath au service
-    var result = await _Afb120Service.GenerateFromExcelAsync(request.File, request.OutputPath, cancellationToken);
-    return Ok(result);
-}
+        public async Task<IActionResult> GenerateFromExcel([FromForm] AfbUploadRequest request, CancellationToken cancellationToken)
+        {
+            try
+            {
+                // Appel de votre service mis à jour
+                var result = await _Afb120Service.GenerateFromExcelAsync(request.File, request.OutputPath, cancellationToken);
+                return Ok(result);
+            }
+            catch (MissingMappingsException ex)
+            {
+                // C'est ici qu'on attrape l'exception pour renvoyer le code 422 avec la liste des chaînes
+                return StatusCode(StatusCodes.Status422UnprocessableEntity, ex.MissingKeywords);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                // Gestion des autres erreurs imprévues
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Une erreur système est survenue.", detail = ex.Message });
+            }
+        }
+    
 }
