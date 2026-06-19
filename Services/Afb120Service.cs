@@ -120,8 +120,8 @@ public class MissingMappingsException : Exception
                 string cib1 = "  "; string cib2 = "    ";
                 
                 var normalizedLibelle = _libelleService.NormalizeKeyword(originalLibelle);
-                var detection = await _libelleService.DetectCategorieAsync(normalizedLibelle, cancellationToken);
-                
+                var detection = await _libelleService.DetectCategorieAsync(normalizedLibelle, amount, cancellationToken);
+
                 if (detection != null && detection.IsDetected && !string.IsNullOrWhiteSpace(detection.Flux))
                 {
                     var cleanFluxCode = detection.Flux.Trim().ToUpperInvariant();

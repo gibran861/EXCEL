@@ -21,6 +21,7 @@ builder.Services.AddScoped<XrtSyncService>();
 builder.Services.AddScoped<CibService>();
 builder.Services.AddScoped<Afb120Service>();
 builder.Services.AddScoped<CurrencyService>();
+builder.Services.AddScoped<fluxMappingService>();
 
 builder.Services.AddCors(options =>
 {

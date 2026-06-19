@@ -521,6 +521,7 @@ public class LibelleService
 
 public async Task<DetectCategorieResult> DetectCategorieAsync(
     string libelle,
+    decimal transactionAmount, // 💡 AJOUT : Le montant de la transaction actuelle
     CancellationToken cancellationToken = default)
 {
     if (string.IsNullOrWhiteSpace(libelle))
@@ -529,8 +530,7 @@ public async Task<DetectCategorieResult> DetectCategorieAsync(
     // 1. Normalisation du libellé reçu
     var text = NormalizeKeyword(libelle).ToUpperInvariant();
 
-    // 2. Récupération dynamique des règles depuis la base de données
-    // Idéalement, appliquez un cache ici pour ne pas interroger la BDD à chaque ligne de relevé
+    // 2. Récupération dynamique des règles actives depuis la base de données
     var databaseMappings = await _dbContext.FluxMappings
         .Where(m => m.IsActive)
         .ToListAsync(cancellationToken);
@@ -540,21 +540,45 @@ public async Task<DetectCategorieResult> DetectCategorieAsync(
     {
         var keywordUpper = item.Keyword.ToUpperInvariant();
 
-        // Si le libellé contient le mot-clé dynamique
+        // Étape A : Si le libellé contient le mot-clé dynamique
         if (text.Contains(keywordUpper))
         {
-            return new DetectCategorieResult
+            // Étape B : Vérification de la condition de montant (si spécifiée)
+            bool isAmountConditionValid = true;
+
+            // On extrait l'opérateur (par défaut "ANY" si null ou vide)
+            string op = string.IsNullOrWhiteSpace(item.Operator) ? "ANY" : item.Operator.ToUpperInvariant();
+            decimal targetAmt = item.TargetAmount ?? 0;
+
+            if (op != "ANY")
             {
-                Libelle = libelle,
-                IsDetected = true,
-           
-                Flux = item.Flux,
-                MotCleDetecte = item.Keyword // Renvoie le mot-clé d'origine enregistré
-            };
+                // On applique le filtre selon l'opérateur choisi
+                isAmountConditionValid = op switch
+                {
+                    "<=" => transactionAmount <= targetAmt,
+                    ">=" => transactionAmount >= targetAmt,
+                    "==" => transactionAmount == targetAmt,
+                    "<"  => transactionAmount < targetAmt,
+                    ">"  => transactionAmount > targetAmt,
+                    _    => true // Si l'opérateur est inconnu, on ne bloque pas
+                };
+            }
+
+            // Si le mot-clé ET la condition de montant sont valides, on retourne le résultat
+            if (isAmountConditionValid)
+            {
+                return new DetectCategorieResult
+                {
+                    Libelle = libelle,
+                    IsDetected = true,
+                    Flux = item.Flux,
+                    MotCleDetecte = item.Keyword 
+                };
+            }
         }
     }
 
-    // Aucun mot-clé trouvé
+    // Aucun mot-clé ou aucune condition correspondante trouvée
     return new DetectCategorieResult
     {
         Libelle = libelle,
@@ -603,7 +627,7 @@ public async Task<ExcelFluxExtractResult> ExtractAndSaveFluxFromExcelAsync(IForm
     foreach (var libelle in distinctLibelles)
     {
         // On appelle ta méthode existante de détection de catégorie
-        var detectionResult = await DetectCategorieAsync(libelle, cancellationToken);
+        var detectionResult = await DetectCategorieAsync(libelle,10, cancellationToken);
         
         if (detectionResult != null && detectionResult.IsDetected && !string.IsNullOrWhiteSpace(detectionResult.Flux))
         {
