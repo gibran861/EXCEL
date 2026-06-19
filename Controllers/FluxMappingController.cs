@@ -49,6 +49,9 @@ namespace AfbGenerator.Server.Controllers
             {
                 Flux = request.Flux.Trim(),
                 Keyword = request.Keyword.Trim(),
+                Operator = request.Operator ?? "ANY",
+        TargetAmount = request.TargetAmount,
+        BankCode = request.BankCode,
                 IsActive = true
             };
 
