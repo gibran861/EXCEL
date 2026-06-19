@@ -15,6 +15,8 @@ public class AppDbContext : DbContext
     public DbSet<Banque> Banques { get; set; }
     public DbSet<NEWFlux> Flux { get; set; }
     public DbSet<Cib> Cib { get; set; }
+    public DbSet<FluxMapping> FluxMappings { get; set; }
+    
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
