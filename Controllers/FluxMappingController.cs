@@ -42,9 +42,7 @@ namespace AfbGenerator.Server.Controllers
             var keywordUpper = request.Keyword.Trim().ToUpperInvariant();
             bool exists = await _context.FluxMappings.AnyAsync(m => m.Keyword.ToUpper() == keywordUpper);
             
-            if (exists)
-                return Conflict("Ce mot-clé est déjà configuré pour une règle de détection.");
-
+        
             var mapping = new FluxMapping
             {
                 Flux = request.Flux.Trim(),
