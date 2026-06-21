@@ -104,110 +104,123 @@ public class BanqueController : ControllerBase
     }
 
     // 3. POST : Importer des banques depuis un fichier Excel
-    [HttpPost("import-excel")]
-    [Consumes("multipart/form-data")]
-    [ProducesResponseType(typeof(BanqueImportResult), StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    public async Task<ActionResult<BanqueImportResult>> ImportExcel(IFormFile file, CancellationToken cancellationToken)
-    {
-        if (file == null || file.Length == 0)
+ [HttpPost("import-excel")]
+        [Consumes("multipart/form-data")]
+        [ProducesResponseType(typeof(BanqueImportResult), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        public async Task<ActionResult<BanqueImportResult>> ImportExcel(IFormFile file, CancellationToken cancellationToken)
         {
-            return BadRequest(new { message = "Le fichier Excel est requis." });
-        }
-
-        try
-        {
-            var rows = ReadWorksheetRows(file);
-            if (rows == null || rows.Count == 0)
+            if (file == null || file.Length == 0)
             {
-                return BadRequest(new { message = "Le fichier Excel ne contient aucune donnée." });
+                return BadRequest(new { message = "Le fichier Excel est requis." });
             }
 
-            var headerRow = rows[0];
-            var codeBanqueCol = FindColumnIndex(headerRow, "CodeBanque");
-            var libelleCol = FindColumnIndex(headerRow, "Libelle");
-
-            if (codeBanqueCol < 0) codeBanqueCol = FindColumnIndex(headerRow, "Code Banque");
-            if (libelleCol < 0) libelleCol = FindColumnIndex(headerRow, "Libellé");
-
-            if (codeBanqueCol < 0 || libelleCol < 0)
+            try
             {
-                return BadRequest(new { message = "Une ou plusieurs colonnes requises (CodeBanque, Libelle) sont manquantes dans les en-têtes." });
-            }
-
-            var excelBanqueItems = new List<Banque>();
-
-            for (int i = 1; i < rows.Count; i++)
-            {
-                var row = rows[i];
-                var codeBanque = GetCell(row, codeBanqueCol).Trim().ToUpperInvariant();
-                var libelle = GetCell(row, libelleCol).Trim();
-
-                if (string.IsNullOrWhiteSpace(codeBanque) && string.IsNullOrWhiteSpace(libelle))
+                var rows = ReadWorksheetRows(file);
+                if (rows == null || rows.Count == 0)
                 {
-                    continue;
+                    return BadRequest(new { message = "Le fichier Excel ne contient aucune donnée." });
                 }
 
-                if (string.IsNullOrWhiteSpace(codeBanque))
+                var headerRow = rows[0];
+                var codeBanqueCol = FindColumnIndex(headerRow, "CodeBanque");
+                var libelleCol = FindColumnIndex(headerRow, "Libelle");
+                
+                // 1. Détection de la colonne Compte / CodeCompte
+                var compteCol = FindColumnIndex(headerRow, "Compte");
+                if (compteCol < 0) compteCol = FindColumnIndex(headerRow, "CodeCompte");
+                if (compteCol < 0) compteCol = FindColumnIndex(headerRow, "Code Compte");
+
+                if (codeBanqueCol < 0) codeBanqueCol = FindColumnIndex(headerRow, "Code Banque");
+                if (libelleCol < 0) libelleCol = FindColumnIndex(headerRow, "Libellé");
+
+                if (codeBanqueCol < 0 || libelleCol < 0)
                 {
-                    continue;
+                    return BadRequest(new { message = "Une ou plusieurs colonnes requises (CodeBanque, Libelle) sont manquantes dans les en-têtes." });
                 }
 
-                excelBanqueItems.Add(new Banque
+                var excelBanqueItems = new List<Banque>();
+
+                for (int i = 1; i < rows.Count; i++)
                 {
-                    CodeBanque = codeBanque,
-                    Libelle = libelle,
-                    Filiale = "STANDARD",  
-                    TypeFichier = "AFB120", 
-                    IsActive = true,
-                    CreatedAt = DateTime.UtcNow
+                    var row = rows[i];
+                    var codeBanque = GetCell(row, codeBanqueCol).Trim().ToUpperInvariant();
+                    var libelle = GetCell(row, libelleCol).Trim();
+                    
+                    // 2. Récupération de la valeur du compte (si la colonne existe)
+                    string? compte = null;
+                    if (compteCol >= 0)
+                    {
+                        compte = GetCell(row, compteCol).Trim();
+                    }
+
+                    if (string.IsNullOrWhiteSpace(codeBanque) && string.IsNullOrWhiteSpace(libelle))
+                    {
+                        continue;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(codeBanque))
+                    {
+                        continue;
+                    }
+
+                    excelBanqueItems.Add(new Banque
+                    {
+                        CodeBanque = codeBanque,
+                        Libelle = libelle,
+                        Compte = compte, // 3. Affectation au modèle Banque
+                        Filiale = "STANDARD",  
+                        TypeFichier = "AFB120", 
+                        IsActive = true,
+                        CreatedAt = DateTime.UtcNow
+                    });
+                }
+
+                var uniqueExcelItems = excelBanqueItems
+                    .GroupBy(b => b.CodeBanque, StringComparer.OrdinalIgnoreCase)
+                    .Select(g => g.First())
+                    .ToList();
+
+                var existingCodes = await _dbContext.Banques
+                    .Select(b => b.CodeBanque)
+                    .ToListAsync(cancellationToken);
+
+                var existingSet = new HashSet<string>(existingCodes, StringComparer.OrdinalIgnoreCase);
+                var toInsert = new List<Banque>();
+                var skippedExistingCount = 0;
+
+                foreach (var item in uniqueExcelItems)
+                {
+                    if (existingSet.Contains(item.CodeBanque))
+                    {
+                        skippedExistingCount++;
+                        continue;
+                    }
+
+                    toInsert.Add(item);
+                }
+
+                int insertedCount = 0;
+                if (toInsert.Count > 0)
+                {
+                    await _dbContext.Banques.AddRangeAsync(toInsert, cancellationToken);
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+                    insertedCount = toInsert.Count;
+                }
+
+                return Ok(new BanqueImportResult
+                {
+                    TotalRowsProcessed = excelBanqueItems.Count,
+                    InsertedCount = insertedCount,
+                    SkippedExistingCount = skippedExistingCount + (excelBanqueItems.Count - uniqueExcelItems.Count)
                 });
             }
-
-            var uniqueExcelItems = excelBanqueItems
-                .GroupBy(b => b.CodeBanque, StringComparer.OrdinalIgnoreCase)
-                .Select(g => g.First())
-                .ToList();
-
-            var existingCodes = await _dbContext.Banques
-                .Select(b => b.CodeBanque)
-                .ToListAsync(cancellationToken);
-
-            var existingSet = new HashSet<string>(existingCodes, StringComparer.OrdinalIgnoreCase);
-            var toInsert = new List<Banque>();
-            var skippedExistingCount = 0;
-
-            foreach (var item in uniqueExcelItems)
+            catch (Exception ex)
             {
-                if (existingSet.Contains(item.CodeBanque))
-                {
-                    skippedExistingCount++;
-                    continue;
-                }
-
-                toInsert.Add(item);
+                return BadRequest(new { message = $"Erreur lors de l'import : {ex.Message}" });
             }
-
-            int insertedCount = 0;
-            if (toInsert.Count > 0)
-            {
-                await _dbContext.Banques.AddRangeAsync(toInsert, cancellationToken);
-                await _dbContext.SaveChangesAsync(cancellationToken);
-                insertedCount = toInsert.Count;
-            }
-
-            return Ok(new BanqueImportResult
-            {
-                TotalRowsProcessed = excelBanqueItems.Count,
-                InsertedCount = insertedCount,
-                SkippedExistingCount = skippedExistingCount + (excelBanqueItems.Count - uniqueExcelItems.Count)
-            });
         }
-        catch (Exception ex)
-        {
-            return BadRequest(new { message = $"Erreur lors de l'import : {ex.Message}" });
-        }
-    }
 
     // --- EN-BAS : MÉTHODES UTILITAIRES EXCELDATAREADER ---
 
