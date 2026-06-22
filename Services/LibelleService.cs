@@ -521,78 +521,77 @@ public class LibelleService
 
 public async Task<DetectCategorieResult> DetectCategorieAsync(
     string libelle,
-    decimal transactionAmount, 
+    decimal transactionAmount,
     string currentBankCode,
     CancellationToken cancellationToken = default)
 {
     if (string.IsNullOrWhiteSpace(libelle))
         throw new ArgumentException("Libelle obligatoire");
 
-    // 1. Normalisation du libellé reçu
     var text = NormalizeKeyword(libelle).ToUpperInvariant();
 
-    // 2. Récupération dynamique et TRIÉ des règles actives
-    // 💡 IDÉE CLÉ : On trie pour que les règles avec conditions de montants spécifiques 
-    // et de banques spécifiques soient évaluées EN PREMIER.
     var databaseMappings = await _dbContext.FluxMappings
         .Where(m => m.IsActive)
-        .OrderByDescending(m => !string.IsNullOrEmpty(m.BankCode)) // Les règles spécifiques à une banque d'abord
-        .ThenByDescending(m => !string.IsNullOrEmpty(m.Operator) && m.Operator.ToUpper() != "ANY") // Les règles avec filtres de montants d'abord
         .ToListAsync(cancellationToken);
 
-    // 3. Parcours des règles ordonnées
+    var candidates = new List<(FluxMapping item, int score, int position)>();
+
     foreach (var item in databaseMappings)
     {
         var keywordUpper = item.Keyword.ToUpperInvariant();
 
-        // Étape A : Si le libellé contient le mot-clé dynamique (ex: "TRB2")
-        if (text.Contains(keywordUpper))
+        if (!text.Contains(keywordUpper))
+            continue;
+
+        // Vérification BankCode
+        bool isBankValid = string.IsNullOrWhiteSpace(item.BankCode) ||
+                           item.BankCode.Equals(currentBankCode, StringComparison.OrdinalIgnoreCase);
+        if (!isBankValid)
+            continue;
+
+        // Vérification Montant
+        string op = string.IsNullOrWhiteSpace(item.Operator) ? "ANY" : item.Operator.ToUpperInvariant();
+        decimal targetAmt = item.TargetAmount ?? 0;
+        bool isAmountValid = op == "ANY" || op switch
         {
-            // Étape B : Vérification du Code Banque
-            bool isBankValid = string.IsNullOrWhiteSpace(item.BankCode) || 
-                               item.BankCode.Equals(currentBankCode, StringComparison.OrdinalIgnoreCase);
+            "<=" => transactionAmount <= targetAmt,
+            "==" => transactionAmount == targetAmt,
+            ">=" => transactionAmount >= targetAmt,
+            "<"  => transactionAmount < targetAmt,
+            ">"  => transactionAmount > targetAmt,
+            _    => true
+        };
 
-            if (!isBankValid)
-                continue; // Ne correspond pas à cette banque, règle suivante.
+        if (!isAmountValid)
+            continue;
 
-            // Étape C : Vérification de la condition de montant
-            bool isAmountConditionValid = true;
-            string op = string.IsNullOrWhiteSpace(item.Operator) ? "ANY" : item.Operator.ToUpperInvariant();
-            decimal targetAmt = item.TargetAmount ?? 0;
+        // Score de spécificité (BankCode + Operator)
+        int score = 0;
+        score += string.IsNullOrWhiteSpace(item.BankCode) ? 0 : 20;
+        score += (op == "ANY") ? 0 : 30;
 
-            if (op != "ANY")
-            {
-                isAmountConditionValid = op switch
-                {
-                    "<=" => transactionAmount <= targetAmt,
-                    "==" => transactionAmount == targetAmt,
-                    ">=" => transactionAmount >= targetAmt,
-                    "<"  => transactionAmount < targetAmt,
-                    ">"  => transactionAmount > targetAmt,
-                    _    => true // Opérateur inconnu, on ne bloque pas
-                };
-            }
+        // ✅ Position du mot-clé dans le libellé
+        int position = text.IndexOf(keywordUpper);
 
-            // Si toutes les conditions (Texte + Banque + Montant) sont validées à ce stade, 
-            // vu que la liste est triée du plus strict au plus général, c'est le match parfait !
-            if (isAmountConditionValid)
-            {
-                return new DetectCategorieResult
-                {
-                    Libelle = libelle,
-                    IsDetected = true,
-                    Flux = item.Flux,
-                    MotCleDetecte = item.Keyword 
-                };
-            }
-        }
+        candidates.Add((item, score, position));
     }
 
-    // Aucun mot-clé ou aucune condition correspondante trouvée
+    if (candidates.Count == 0)
+        return new DetectCategorieResult { Libelle = libelle, IsDetected = false };
+
+    // ✅ Tri final : spécificité d'abord, puis position, puis longueur du mot-clé
+    var best = candidates
+        .OrderByDescending(c => c.score)                           // 1. Règle la plus spécifique (BankCode + Operator)
+        .ThenBy(c => c.position)                                   // 2. Mot-clé le plus tôt dans le libellé
+        .ThenByDescending(c => c.item.Keyword.Length)              // 3. Mot-clé le plus long
+        .First().item;
+
     return new DetectCategorieResult
     {
         Libelle = libelle,
-        IsDetected = false
+        IsDetected = true,
+        Flux = best.Flux,
+        MotCleDetecte = best.Keyword
     };
 }
 
