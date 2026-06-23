@@ -563,12 +563,17 @@ namespace AfbGenerator.Api.Services
             AssertLength(line01, "01", bankCode);
             sb.AppendLine(line01);
 
-            var seenLine04 = new HashSet<string>();
+            var line04Count = 0;
+
             foreach (var row in movements)
             {
                 var line04 = BuildLine04(row);
+
                 AssertLength(line04, "04", row.Label);
-                if (seenLine04.Add(line04)) sb.AppendLine(line04);
+
+                sb.AppendLine(line04);
+
+                line04Count++;
             }
 
             var totalCredit    = movements.Where(r => r.Sens == "C").Sum(r => r.Amount);
@@ -588,14 +593,14 @@ namespace AfbGenerator.Api.Services
             {
                 Message         = $"Génération AFB120 réussie dans {finalOutputDir}",
                 NombreFichiers  = 1,
-                TotalMouvements = seenLine04.Count
+                TotalMouvements = line04Count
             };
             result.Fichiers.Add(filePath);
             result.Detail.Add(new GenerateDetailDto
             {
                 AccountId      = bankCode,
                 Currency       = first.Currency,
-                NbMouvements   = seenLine04.Count,
+                NbMouvements   = line04Count,
                 TotalCredit    = totalCredit,
                 TotalDebit     = totalDebit,
                 SoldeOuverture = initialBalance,

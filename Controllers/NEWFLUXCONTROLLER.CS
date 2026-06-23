@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using AfbGenerator.Api.Models;
+
 namespace AfbGenerator.Api.Controllers;
 
 [ApiController]
@@ -34,21 +35,20 @@ public class NEWFLUXCONTROLLER : ControllerBase
         return Ok(fluxList);
     }
 
-
-[HttpGet("{code}/libelle")]
-public async Task<ActionResult<string>> GetLibelleByCode(string code)
-{
-    // Recherche du flux par son code (Key) dans la base de données
-    var flux = await _dbContext.Flux.FindAsync(code);
-
-    if (flux == null)
+    [HttpGet("{code}/libelle")]
+    public async Task<ActionResult<string>> GetLibelleByCode(string code)
     {
-        return NotFound($"Aucun flux trouvé avec le code : {code}");
-    }
+        // Recherche du flux par son code (Key) dans la base de données
+        var flux = await _dbContext.Flux.FindAsync(code);
 
-    // Retourne uniquement le libellé
-    return Ok(flux.Libelle);
-}
+        if (flux == null)
+        {
+            return NotFound($"Aucun flux trouvé avec le code : {code}");
+        }
+
+        // Retourne uniquement le libellé
+        return Ok(flux.Libelle);
+    }
 
     [HttpPost]
     [ProducesResponseType(typeof(NEWFlux), StatusCodes.Status201Created)]
@@ -62,7 +62,6 @@ public async Task<ActionResult<string>> GetLibelleByCode(string code)
             return BadRequest(ModelState);
         }
 
-
         // Vérifier si le code existe déjà
         var existe = await _dbContext.Flux
             .AnyAsync(x => x.Code == request.Code, cancellationToken);
@@ -71,7 +70,6 @@ public async Task<ActionResult<string>> GetLibelleByCode(string code)
         {
             return BadRequest($"Le flux {request.Code} existe déjà");
         }
-
 
         var nouveauFlux = new NEWFlux
         {
@@ -83,10 +81,8 @@ public async Task<ActionResult<string>> GetLibelleByCode(string code)
             CreatedAt = DateTime.UtcNow
         };
 
-
         await _dbContext.Flux.AddAsync(nouveauFlux, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
-
 
         return CreatedAtAction(
             nameof(GetAll),
@@ -94,7 +90,57 @@ public async Task<ActionResult<string>> GetLibelleByCode(string code)
             nouveauFlux
         );
     }
-    // 2. POST : Importer les flux via un fichier Excel
+
+
+[HttpPut("{id:int}")] // On passe par l'ID numérique maintenant
+public async Task<IActionResult> Update(int id, [FromBody] NEWFlux request, CancellationToken cancellationToken)
+{
+    if (id != request.Id)
+    {
+        return BadRequest("L'Id dans l'URL ne correspond pas à l'objet fourni.");
+    }
+
+    if (!ModelState.IsValid) return BadRequest(ModelState);
+
+    // Recherche par ID
+    var fluxExistant = await _dbContext.Flux
+        .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+
+    if (fluxExistant == null)
+    {
+        return NotFound($"Aucun flux trouvé avec l'Id : {id}");
+    }
+
+    // Le Code peut potentiellement être modifié maintenant s'il n'est plus clé primaire !
+    fluxExistant.Code = request.Code.Trim().ToUpperInvariant(); 
+    fluxExistant.TypeFlux = request.TypeFlux.Trim().ToUpperInvariant();
+    fluxExistant.Libelle = request.Libelle.Trim();
+    fluxExistant.Sens = request.Sens.Trim().ToUpperInvariant();
+    fluxExistant.IsActive = request.IsActive;
+
+    await _dbContext.SaveChangesAsync(cancellationToken);
+    return NoContent();
+}
+
+    
+[HttpDelete("{id:int}")] // On cible par ID
+public async Task<IActionResult> Delete(int id, CancellationToken cancellationToken)
+{
+    var flux = await _dbContext.Flux
+        .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+
+    if (flux == null)
+    {
+        return NotFound($"Aucun flux trouvé avec l'Id : {id}");
+    }
+
+    _dbContext.Flux.Remove(flux);
+    await _dbContext.SaveChangesAsync(cancellationToken);
+
+    return NoContent();
+}
+
+    // 4. POST : Importer les flux via un fichier Excel
     [HttpPost("import-excel")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]

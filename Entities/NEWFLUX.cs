@@ -1,10 +1,14 @@
 using System.ComponentModel.DataAnnotations;
-
+using System.ComponentModel.DataAnnotations.Schema;
 namespace AfbGenerator.Api.Entities;
 
 public class NEWFlux
 {
     [Key]
+    [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
+    public int Id { get; set; }
+
+    [Required]
     [StringLength(50)]
     public string Code { get; set; } = string.Empty; // ex: "CHQ_EMIS"
 
