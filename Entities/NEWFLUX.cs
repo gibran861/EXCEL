@@ -12,9 +12,9 @@ public class NEWFlux
     [StringLength(50)]
     public string Code { get; set; } = string.Empty; // ex: "CHQ_EMIS"
 
-    [Required]
+  
     [StringLength(100)]
-    public string TypeFlux { get; set; } = string.Empty; // ex: "CHEQUE"
+    public string? TypeFlux { get; set; } = string.Empty; // ex: "CHEQUE"
 
     [Required]
     [StringLength(250)]
