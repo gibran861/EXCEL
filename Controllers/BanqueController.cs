@@ -101,105 +101,114 @@ public class BanqueController : ControllerBase
     }
 
     // 2a. POST : Import Excel
-    [HttpPost("import-excel")]
-    [Consumes("multipart/form-data")]
-    public async Task<IActionResult> ImportBanque(
-        IFormFile file,
-        [FromQuery] bool updateExisting = false,
-        CancellationToken cancellationToken = default)
+  // BanqueController.cs — endpoint import-excel mis à jour
+[HttpPost("import-excel")]
+[Consumes("multipart/form-data")]
+public async Task<IActionResult> ImportBanque(
+    IFormFile file,
+    [FromForm] string? codesAMettreAJour = null,
+    CancellationToken cancellationToken = default)
+{
+    if (file == null || file.Length == 0)
+        return BadRequest(new { message = "Fichier requis" });
+
+    try
     {
-        if (file == null || file.Length == 0)
-            return BadRequest(new { message = "Fichier requis" });
-
-        try
+        // Désérialiser la liste des codes à mettre à jour
+        var codesToUpdate = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(codesAMettreAJour))
         {
-            var rows = _importService.ReadFile(file);
+            var parsed = System.Text.Json.JsonSerializer.Deserialize<List<string>>(codesAMettreAJour);
+            if (parsed != null)
+                foreach (var c in parsed) codesToUpdate.Add(c);
+        }
 
-            if (rows.Count == 0)
-                return BadRequest(new { message = "Fichier vide" });
+        var rows = _importService.ReadFile(file);
+        if (rows.Count == 0) return BadRequest(new { message = "Fichier vide" });
 
-            var header = rows[0];
+        var header   = rows[0];
+        int codeCol  = _importService.FindColumnIndex(header, "CodeBanque");
+        int libCol   = _importService.FindColumnIndex(header, "Libelle");
+        int compteCol = _importService.FindColumnIndex(header, "Compte");
 
-            int codeCol   = _importService.FindColumnIndex(header, "CodeBanque");
-            int libCol    = _importService.FindColumnIndex(header, "Libelle");
-            int compteCol = _importService.FindColumnIndex(header, "Compte");
+        if (codeCol < 0 || libCol < 0)
+            return BadRequest(new { message = "Colonnes manquantes (CodeBanque, Libelle)" });
 
-            if (codeCol < 0 || libCol < 0)
-                return BadRequest(new { message = "Colonnes manquantes (CodeBanque, Libelle)" });
+        // Collecter tous les codes du fichier
+        var codesInFile = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 1; i < rows.Count; i++)
+        {
+            var c = rows[i][codeCol].Trim().ToUpperInvariant();
+            if (!string.IsNullOrWhiteSpace(c)) codesInFile.Add(c);
+        }
 
-            // ── 1. Collecter tous les codes du fichier ──────────────────────
-            var codesInFile = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            for (int i = 1; i < rows.Count; i++)
+        var existingBanques = await _dbContext.Banques
+            .Where(x => codesInFile.Contains(x.CodeBanque))
+            .ToListAsync(cancellationToken);
+
+        var existingDict = existingBanques
+            .ToDictionary(b => b.CodeBanque, StringComparer.OrdinalIgnoreCase);
+
+        var toInsert   = new List<Banque>();
+        var duplicates = new List<object>(); // pour le premier appel
+        int skipped    = 0;
+        int updated    = 0;
+
+        for (int i = 1; i < rows.Count; i++)
+        {
+            var code   = rows[i][codeCol].Trim().ToUpperInvariant();
+            var lib    = rows[i][libCol].Trim();
+            string? compte = compteCol >= 0 ? rows[i][compteCol].Trim() : null;
+
+            if (string.IsNullOrWhiteSpace(code)) continue;
+
+            if (existingDict.TryGetValue(code, out var existing))
             {
-                var c = rows[i][codeCol].Trim().ToUpperInvariant();
-                if (!string.IsNullOrWhiteSpace(c))
-                    codesInFile.Add(c);
-            }
-
-            // ── 2. Charger uniquement les banques qui matchent ──────────────
-            var existingBanques = await _dbContext.Banques
-                .Where(x => codesInFile.Contains(x.CodeBanque))
-                .ToListAsync(cancellationToken);
-
-            var existingDict = existingBanques
-                .ToDictionary(b => b.CodeBanque, StringComparer.OrdinalIgnoreCase);
-
-            // ── 3. Traiter chaque ligne ─────────────────────────────────────
-            var toInsert = new List<Banque>();
-            int skipped  = 0;
-            int updated  = 0;
-
-            for (int i = 1; i < rows.Count; i++)
-            {
-                var code   = rows[i][codeCol].Trim().ToUpperInvariant();
-                var lib    = rows[i][libCol].Trim();
-                string? compte = compteCol >= 0 ? rows[i][compteCol].Trim() : null;
-
-                if (string.IsNullOrWhiteSpace(code)) continue;
-
-                if (existingDict.TryGetValue(code, out var existing))
+                if (codesToUpdate.Contains(code))
                 {
-                    if (updateExisting)
-                    {
-                        existing.Libelle = lib;
-                        existing.Compte  = compte;
-                        updated++;
-                    }
-                    else
-                    {
-                        skipped++;
-                    }
-                    continue;
+                    // Mise à jour ciblée
+                    existing.Libelle = lib;
+                    existing.Compte  = compte;
+                    updated++;
                 }
-
-                toInsert.Add(new Banque
+                else
                 {
-                    CodeBanque  = code,
-                    Libelle     = lib,
-                    Compte      = compte,
-                    Filiale     = "STANDARD",
-                    TypeFichier = "AFB120",
-                    IsActive    = true,
-                    CreatedAt   = DateTime.UtcNow
-                });
+                    // Skip + on remonte l'info au front (premier appel)
+                    duplicates.Add(new { code, libelle = lib });
+                    skipped++;
+                }
+                continue;
             }
 
-            await _dbContext.Banques.AddRangeAsync(toInsert, cancellationToken);
-            await _dbContext.SaveChangesAsync(cancellationToken);
-
-            return Ok(new BanqueImportResult
+            toInsert.Add(new Banque
             {
-                TotalRowsProcessed   = rows.Count - 1,
-                InsertedCount        = toInsert.Count,
-                SkippedExistingCount = skipped,
-                UpdatedCount         = updated
+                CodeBanque  = code,
+                Libelle     = lib,
+                Compte      = compte,
+                Filiale     = "STANDARD",
+                TypeFichier = "AFB120",
+                IsActive    = true,
+                CreatedAt   = DateTime.UtcNow
             });
         }
-        catch (Exception ex)
+
+        await _dbContext.Banques.AddRangeAsync(toInsert, cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        return Ok(new
         {
-            return BadRequest(new { message = ex.Message });
-        }
+            TotalRowsProcessed   = rows.Count - 1,
+            InsertedCount        = toInsert.Count,
+            SkippedExistingCount = skipped,
+            UpdatedCount         = updated,
+            Duplicates           = duplicates  // ← liste {code, libelle} pour le front
+        });
     }
+    catch (Exception ex)
+    {
+        return BadRequest(new { message = ex.Message });
+    }
+}
 
     // 2b. PUT : Modifier une configuration de banque existante
     [HttpPut("{id}")]

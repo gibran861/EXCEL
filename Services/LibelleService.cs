@@ -447,6 +447,64 @@ public class LibelleService
 		return -1;
 	}
 
+	private List<List<string>> ReadCsv(IFormFile file)
+{
+    var rows = new List<List<string>>();
+
+    using var reader = new StreamReader(file.OpenReadStream());
+
+    while (!reader.EndOfStream)
+    {
+        var line = reader.ReadLine();
+        if (string.IsNullOrWhiteSpace(line)) continue;
+
+        var separator = line.Contains(";") ? ';' : ',';
+
+        rows.Add(line.Split(separator)
+            .Select(x => x.Trim())
+            .ToList());
+    }
+
+    return rows;
+}
+
+private List<List<string>> ReadExcel(IFormFile file)
+{
+    System.Text.Encoding.RegisterProvider(
+        System.Text.CodePagesEncodingProvider.Instance);
+
+    using var stream = file.OpenReadStream();
+    using var reader = ExcelReaderFactory.CreateReader(stream);
+
+    var rows = new List<List<string>>();
+
+    while (reader.Read())
+    {
+        var row = new List<string>();
+
+        for (int i = 0; i < reader.FieldCount; i++)
+        {
+            row.Add(reader.GetValue(i)?.ToString() ?? "");
+        }
+
+        rows.Add(row);
+    }
+
+    return rows;
+}
+public List<List<string>> ReadFile(IFormFile file)
+{
+    var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
+
+    if (extension == ".csv")
+        return ReadCsv(file);
+
+    if (extension == ".xlsx" || extension == ".xls")
+        return ReadExcel(file);
+
+    throw new Exception("Format non supporté");
+}
+
 	public  int FindHeaderRowIndexContainingColumns(List<List<string>> rows, string firstHeader, string secondHeader)
 	{
 		for (var rowIndex = 0; rowIndex < rows.Count; rowIndex++)
