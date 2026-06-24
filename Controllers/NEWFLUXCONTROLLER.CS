@@ -141,38 +141,65 @@ public async Task<IActionResult> Delete(int id, CancellationToken cancellationTo
 }
 
     // 4. POST : Importer les flux via un fichier Excel
-    [HttpPost("import-excel")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> ImportExcel(IFormFile file, CancellationToken cancellationToken)
+   [HttpPost("import-excel")]
+[ProducesResponseType(StatusCodes.Status200OK)]
+[ProducesResponseType(StatusCodes.Status400BadRequest)]
+public async Task<IActionResult> ImportExcel(
+    IFormFile file,
+    CancellationToken cancellationToken)
+{
+    if (file == null || file.Length == 0)
     {
-        if (file == null || file.Length == 0)
-        {
-            return BadRequest(new { message = "Veuillez fournir un fichier Excel valide." });
-        }
-
-        // Vérification de l'extension du fichier
-        var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
-        if (extension != ".xlsx" && extension != ".xls")
-        {
-            return BadRequest(new { message = "Format de fichier non supporté. Veuillez fournir un fichier .xlsx ou .xls" });
-        }
-
-        try
-        {
-            var (inserted, updated, errors) = await _fluxService.ImportFluxFromExcelAsync(file, cancellationToken);
-
-            return Ok(new
-            {
-                message = "Traitement du fichier Excel terminé avec succès.",
-                insertedRows = inserted,
-                updatedRows = updated,
-                warningsOrErrors = errors
-            });
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { message = $"Une erreur est survenue lors de l'import : {ex.Message}" });
-        }
+        return BadRequest(new 
+        { 
+            message = "Veuillez fournir un fichier Excel ou CSV valide." 
+        });
     }
+
+
+    // Vérification extension fichier
+    var extension = Path.GetExtension(file.FileName)
+        .ToLowerInvariant();
+
+
+    if (extension != ".xlsx" 
+        && extension != ".xls"
+        && extension != ".csv")
+    {
+        return BadRequest(new
+        {
+            message = "Format non supporté. Utilisez un fichier .xlsx, .xls ou .csv"
+        });
+    }
+
+
+
+    try
+    {
+        var (inserted, updated, errors) =
+            await _fluxService.ImportFluxFromExcelAsync(
+                file,
+                cancellationToken);
+
+
+
+        return Ok(new
+        {
+            message = "Traitement du fichier terminé avec succès.",
+
+            insertedRows = inserted,
+
+            updatedRows = updated,
+
+            warningsOrErrors = errors
+        });
+    }
+    catch (Exception ex)
+    {
+        return BadRequest(new
+        {
+            message = $"Une erreur est survenue lors de l'import : {ex.Message}"
+        });
+    }
+}
 }

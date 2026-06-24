@@ -210,86 +210,219 @@ public async Task<FluxResponse> SetCibByBankAndFluxAsync(
 		};
 	}
 
-	public async Task<(int inserted, int updated, List<string> errors)> ImportFluxFromExcelAsync(IFormFile file, CancellationToken cancellationToken)
+	public async Task<(int inserted, int updated, List<string> errors)> ImportFluxFromExcelAsync(
+    IFormFile file,
+    CancellationToken cancellationToken)
+{
+    var errors = new List<string>();
+
+    int insertedCount = 0;
+    int updatedCount = 0;
+
+
+    System.Text.Encoding.RegisterProvider(
+        System.Text.CodePagesEncodingProvider.Instance);
+
+
+
+    using var stream = file.OpenReadStream();
+
+
+    var extension = Path.GetExtension(file.FileName)
+        .ToLowerInvariant();
+
+
+
+    IExcelDataReader reader;
+
+
+    // ==========================
+    // MODIFICATION ICI
+    // ==========================
+
+    if (extension == ".csv")
     {
-        var errors = new List<string>();
-        int insertedCount = 0;
-        int updatedCount = 0;
+        reader = ExcelReaderFactory.CreateCsvReader(stream);
+    }
+    else if (extension == ".xls" || extension == ".xlsx")
+    {
+        reader = ExcelReaderFactory.CreateReader(stream);
+    }
+    else
+    {
+        errors.Add("Format de fichier non supporté.");
+        return (0, 0, errors);
+    }
 
-        // Configuration pour supporter l'encodage des fichiers Excel
-        System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
 
-        using var stream = file.OpenReadStream();
-        using var reader = ExcelReaderFactory.CreateReader(stream);
+
+    using (reader)
+    {
 
         int rowIndex = 0;
-        
-        // Dictionnaires pour mapper dynamiquement les colonnes par leur header
-        int colCode = -1, colType = -1, colLibelle = -1, colSens = -1;
+
+
+        int colCode = -1;
+        int colType = -1;
+        int colLibelle = -1;
+        int colSens = -1;
+
+
 
         while (reader.Read())
         {
             rowIndex++;
 
-            // 1. Lecture de la première ligne (Header) pour trouver les indices des colonnes
+
+
+            // HEADER
             if (rowIndex == 1)
             {
+
                 for (int i = 0; i < reader.FieldCount; i++)
                 {
-                    var headerValue = reader.GetValue(i)?.ToString()?.Trim().ToUpperInvariant();
-                    if (headerValue == "CODE") colCode = i;
-                    else if (headerValue == "TYPE FLUX") colType = i;
-                    else if (headerValue == "LIBELLE") colLibelle = i;
-                    else if (headerValue == "SENS") colSens = i;
+                    var headerValue =
+                        reader.GetValue(i)?
+                        .ToString()?
+                        .Trim()
+                        .ToUpperInvariant();
+
+
+
+                    if (headerValue == "CODE")
+                        colCode = i;
+
+
+                    else if (headerValue == "TYPE FLUX"
+                          || headerValue == "TYPEFLUX")
+                        colType = i;
+
+
+                    else if (headerValue == "LIBELLE"
+                          || headerValue == "LIBELLÉ")
+                        colLibelle = i;
+
+
+                    else if (headerValue == "SENS")
+                        colSens = i;
                 }
 
-                if (colCode == -1 || colType == -1 || colLibelle == -1 || colSens == -1)
+
+
+                if (colCode == -1 ||
+                    colType == -1 ||
+                    colLibelle == -1 ||
+                    colSens == -1)
                 {
-                    errors.Add("Le fichier Excel ne contient pas tous les headers requis : 'Code', 'Type flux', 'Libelle', 'SENS'.");
-                    return (0, 0, errors);
+                    errors.Add(
+                    "Le fichier doit contenir : Code, Type flux, Libelle, SENS");
+
+                    return (0,0,errors);
                 }
+
+
                 continue;
             }
 
-            // 2. Extraction des valeurs de la ligne
-            var code = reader.GetValue(colCode)?.ToString()?.Trim().ToUpperInvariant();
-            var typeFlux = reader.GetValue(colType)?.ToString()?.Trim();
-            var libelle = reader.GetValue(colLibelle)?.ToString()?.Trim();
-            var sens = reader.GetValue(colSens)?.ToString()?.Trim().ToUpperInvariant();
 
-           
-            // 3. Vérification de l'existence en base de données
-            var existingFlux = await _dbContext.Flux
-                .FirstOrDefaultAsync(x => x.Code == code, cancellationToken);
 
-            if (existingFlux == null)
+
+
+            var code =
+                reader.GetValue(colCode)?
+                .ToString()?
+                .Trim()
+                .ToUpperInvariant();
+
+
+
+            var typeFlux =
+                reader.GetValue(colType)?
+                .ToString()
+                ?.Trim();
+
+
+
+            var libelle =
+                reader.GetValue(colLibelle)?
+                .ToString()
+                ?.Trim();
+
+
+
+            var sens =
+                reader.GetValue(colSens)?
+                .ToString()
+                ?.Trim()
+                .ToUpperInvariant();
+
+
+
+
+            if (string.IsNullOrWhiteSpace(code))
+                continue;
+
+
+
+            var existingFlux =
+                await _dbContext.Flux
+                .FirstOrDefaultAsync(
+                    x => x.Code == code,
+                    cancellationToken);
+
+
+
+            if(existingFlux == null)
             {
-                // INSERTION
+
                 var newFlux = new NEWFlux
                 {
                     Code = code,
+
                     TypeFlux = typeFlux,
+
                     Libelle = libelle,
+
                     Sens = sens,
+
                     IsActive = true,
+
                     CreatedAt = DateTime.UtcNow
                 };
-                await _dbContext.Flux.AddAsync(newFlux, cancellationToken);
+
+
+                await _dbContext.Flux
+                    .AddAsync(newFlux, cancellationToken);
+
+
                 insertedCount++;
+
             }
             else
             {
-                // MISE À JOUR (si des valeurs ont changé)
+
                 existingFlux.TypeFlux = typeFlux;
+
                 existingFlux.Libelle = libelle;
+
                 existingFlux.Sens = sens;
+
+
                 updatedCount++;
             }
         }
-
-        // Sauvegarde finale de toutes les lignes traitées
-        await _dbContext.SaveChangesAsync(cancellationToken);
-
-        return (insertedCount, updatedCount, errors);
     }
+
+
+
+    await _dbContext.SaveChangesAsync(cancellationToken);
+
+
+
+    return (
+        insertedCount,
+        updatedCount,
+        errors
+    );
+}
 }
