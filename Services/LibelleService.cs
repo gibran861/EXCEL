@@ -6,7 +6,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using System.Data;
 using System.Text;
-
+using System.Globalization;
 namespace AfbGenerator.Api.Services;
 
 public class LibelleService
@@ -467,7 +467,67 @@ public class LibelleService
 
     return rows;
 }
+public List<List<string>> ReadCsvRows(IFormFile file, char delimiter = ',')
+{
+    var rows = new List<List<string>>();
+    using var stream = file.OpenReadStream();
+    using var reader = new StreamReader(stream, Encoding.UTF8);
 
+    while (!reader.EndOfStream)
+    {
+        var line = reader.ReadLine();
+        if (line == null) continue;
+        var cells = ParseCsvLine(line, delimiter);
+        rows.Add(cells);
+    }
+    return rows;
+}
+
+// Parser CSV robuste qui gère les champs entre guillemets
+private List<string> ParseCsvLine(string line, char delimiter = ',')
+{
+    var cells = new List<string>();
+    var sb = new StringBuilder();
+    bool inQuotes = false;
+
+    for (int i = 0; i < line.Length; i++)
+    {
+        char c = line[i];
+
+        if (c == '"')
+        {
+            inQuotes = !inQuotes;
+        }
+        else if (c == delimiter && !inQuotes)
+        {
+            cells.Add(sb.ToString().Trim());
+            sb.Clear();
+        }
+        else
+        {
+            sb.Append(c);
+        }
+    }
+    cells.Add(sb.ToString().Trim());
+    return cells;
+}
+public decimal ParseFlexibleAmount(string raw)
+{
+    if (string.IsNullOrWhiteSpace(raw)) return 0;
+
+    // Supprime les espaces insécables et normaux (séparateurs de milliers style "13 500 000")
+    raw = raw.Replace("\u00A0", "").Replace(" ", "");
+
+    // Si virgule ET point présents → format "18,000,000.00" (virgule = milliers, point = décimale)
+    if (raw.Contains(',') && raw.Contains('.'))
+        raw = raw.Replace(",", "");
+    // Si seulement virgule → décimale française "1500,50"
+    else if (raw.Contains(','))
+        raw = raw.Replace(",", ".");
+
+    decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out decimal result);
+    return result;
+}
 private List<List<string>> ReadExcel(IFormFile file)
 {
     System.Text.Encoding.RegisterProvider(
@@ -666,7 +726,13 @@ public async Task<ExcelFluxExtractResult> ExtractAndSaveFluxFromExcelAsync(IForm
         throw new InvalidOperationException("La ligne contenant 'Compte courant' est introuvable.");
 
     // Récupération du numéro de compte (index 1 d'après ton exemple)
-    string bankCode = GetCell(rows[compteRowIndex], 1).Trim();
+   
+	string bankCode = 
+    GetCell(rows[compteRowIndex],1)
+    .Trim()
+    .Replace(" ","")
+    .Replace(",","")
+    .Replace("E+19","");
     if (string.IsNullOrWhiteSpace(bankCode))
         throw new InvalidOperationException("Le numéro de compte (BankCode) n'a pas pu être extrait.");
 

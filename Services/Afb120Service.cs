@@ -417,19 +417,34 @@ namespace AfbGenerator.Api.Services
             _logger = logger;
         }
 
-        public async Task<GenerateResultDto> GenerateFromExcelAsync(IFormFile file, string? outputPath = null, CancellationToken cancellationToken = default)
+        public async Task<GenerateResultDto> GenerateFromFileAsync(IFormFile file, string? outputPath = null, CancellationToken cancellationToken = default)
         {
-            if (file == null || file.Length == 0)
-                throw new ArgumentException("Le fichier Excel est obligatoire.");
+             if (file == null || file.Length == 0)
+        throw new ArgumentException("Le fichier est obligatoire.");
 
-            var rows = _libelleService.ReadWorksheetRows(file);
+    // ── Détection du type de fichier ──────────────────────────────────────
+    var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
+    List<List<string>> rows;
+
+    if (extension == ".csv")
+    {
+        rows = _libelleService.ReadCsvRows(file);
+    }
+    else if (extension is ".xlsx" or ".xls")
+    {
+        rows = _libelleService.ReadWorksheetRows(file);
+    }
+    else
+    {
+        throw new ArgumentException($"Format de fichier non supporté : '{extension}'. Utilisez .xlsx, .xls ou .csv.");
+    }
             var compteRowIndex = _libelleService.FindRowContaining(rows, "Compte courant");
             if (compteRowIndex < 0) throw new InvalidOperationException("Ligne 'Compte courant' introuvable.");
             var compteRow = rows[compteRowIndex];
 
             string bankCode = _libelleService.GetCell(compteRow, 1).Trim().Replace(" ", "");
-
-            decimal.TryParse(_libelleService.GetCell(compteRow, 2).Trim(), out decimal initialBalance);
+string rawInitialBalance = _libelleService.GetCell(compteRow, 2).Trim();
+decimal initialBalance = _libelleService.ParseFlexibleAmount(rawInitialBalance);
             string rawFileStartDate = _libelleService.GetCell(compteRow, 4).Trim();
             string rawFileEndDate   = _libelleService.GetCell(compteRow, 5).Trim();
             DateTime fileStartDate  = DateTime.TryParse(rawFileStartDate, out var parsedStart) ? parsedStart : DateTime.Now;
@@ -478,7 +493,8 @@ namespace AfbGenerator.Api.Services
 
                 if (string.IsNullOrWhiteSpace(originalLibelle) && string.IsNullOrWhiteSpace(rawMontant)) continue;
 
-                decimal.TryParse(rawMontant, out decimal amount);
+                decimal amount = _libelleService.ParseFlexibleAmount(rawMontant);
+
                 string sens = amount >= 0 ? "C" : "D";
                 amount = Math.Abs(amount);
                 DateTime? opDate  = DateTime.TryParse(rawDateOp,  out var d1) ? d1 : (DateTime?)null;

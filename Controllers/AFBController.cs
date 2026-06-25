@@ -15,17 +15,25 @@ public class AFBController : ControllerBase
         _Afb120Service = Afb120Service;
     }
 
- [HttpPost("generate")]
-public async Task<IActionResult> GenerateFromExcel([FromForm] AfbUploadRequest request, CancellationToken cancellationToken)
+[HttpPost("generate")]
+public async Task<IActionResult> GenerateFromExcel(
+    [FromForm] AfbUploadRequest request,
+    CancellationToken cancellationToken)
 {
     try
     {
-        var result = await _Afb120Service.GenerateFromExcelAsync(request.File, request.OutputPath, cancellationToken);
+        // Validation du type en entrée (double sécurité)
+        var ext = Path.GetExtension(request.File?.FileName ?? "").ToLowerInvariant();
+        if (ext is not (".xlsx" or ".xls" or ".csv"))
+            return BadRequest(new { message = "Format non supporté. Fichiers acceptés : .xlsx, .xls, .csv" });
+
+        var result = await _Afb120Service.GenerateFromFileAsync(   // ← nouveau nom
+            request.File, request.OutputPath, cancellationToken);
+
         return Ok(result);
     }
     catch (MissingMappingsException ex)
     {
-        // Renvoie la liste complète des MissingMappingItem (même structure que l'exception)
         return StatusCode(StatusCodes.Status422UnprocessableEntity, ex.MissingKeywords);
     }
     catch (ArgumentException ex)
@@ -38,7 +46,8 @@ public async Task<IActionResult> GenerateFromExcel([FromForm] AfbUploadRequest r
     }
     catch (Exception ex)
     {
-        return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Une erreur système est survenue.", detail = ex.Message });
+        return StatusCode(StatusCodes.Status500InternalServerError,
+            new { message = "Une erreur système est survenue.", detail = ex.Message });
     }
 }
     

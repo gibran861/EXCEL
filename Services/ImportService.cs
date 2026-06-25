@@ -2,6 +2,7 @@ using AfbGenerator.Api.Data;
 using AfbGenerator.Api.Entities;
 using AfbGenerator.Api.Models;
 using Microsoft.EntityFrameworkCore;
+using System.Text;
 using ExcelDataReader;
 
 namespace AfbGenerator.Api.Services;
@@ -28,26 +29,7 @@ public class ImportService : IImportService
     throw new Exception("Format non supporté");
 }
 
-public List<List<string>> ReadCsv(IFormFile file)
-{
-    var rows = new List<List<string>>();
 
-    using var reader = new StreamReader(file.OpenReadStream());
-
-    while (!reader.EndOfStream)
-    {
-        var line = reader.ReadLine();
-        if (string.IsNullOrWhiteSpace(line)) continue;
-
-        var separator = line.Contains(";") ? ';' : ',';
-
-        rows.Add(line.Split(separator)
-            .Select(x => x.Trim())
-            .ToList());
-    }
-
-    return rows;
-}
 
 public List<List<string>> ReadExcel(IFormFile file)
 {
@@ -119,39 +101,168 @@ int libCol  = FindColumnIndex(header, "Libelle");
 
     return result;
 } 
-public List<List<string>> ReadCsvRows(IFormFile file)
+private List<List<string>> ReadCsv(IFormFile file)
 {
     var rows = new List<List<string>>();
 
+    using var reader = new StreamReader(file.OpenReadStream());
 
-    using(var reader = new StreamReader(file.OpenReadStream()))
+    while (!reader.EndOfStream)
     {
-        while(!reader.EndOfStream)
+        var line = reader.ReadLine();
+
+        if (string.IsNullOrWhiteSpace(line))
+            continue;
+
+        rows.Add(SplitSmart(line));
+    }
+
+    return rows;
+}
+private List<string> SplitSmart(string line)
+{
+    var result = new List<string>();
+    var current = new StringBuilder();
+    bool inQuotes = false;
+
+    for (int i = 0; i < line.Length; i++)
+    {
+        char c = line[i];
+
+        if (c == '"')
         {
-            var line = reader.ReadLine();
+            inQuotes = !inQuotes;
+            continue;
+        }
 
+        // TAB = séparation principale (Excel export)
+        if (c == '\t' && !inQuotes)
+        {
+            result.Add(current.ToString().Trim());
+            current.Clear();
+            continue;
+        }
 
-            if(string.IsNullOrWhiteSpace(line))
+        // VIRGULE CSV mais attention aux nombres
+        if (c == ',' && !inQuotes)
+        {
+            bool isDecimalOrThousand =
+                i > 0 && i < line.Length - 1 &&
+                char.IsDigit(line[i - 1]) &&
+                char.IsDigit(line[i + 1]);
+
+            if (!isDecimalOrThousand)
+            {
+                result.Add(current.ToString().Trim());
+                current.Clear();
                 continue;
+            }
+        }
+
+        current.Append(c);
+    }
+
+    result.Add(current.ToString().Trim());
+    return result;
+}
+private List<string> SplitCsvLine(
+    string line,
+    char separator)
+{
+    var result = new List<string>();
+
+    bool insideQuote = false;
+    var current = new StringBuilder();
 
 
-            // accepte CSV avec ; ou ,
-            var separator =
-                line.Contains(";") ? ';' : ',';
+    foreach(char c in line)
+    {
+        if(c == '"')
+        {
+            insideQuote = !insideQuote;
+            continue;
+        }
 
 
-            var columns =
-                line.Split(separator)
-                .Select(x => x.Trim())
-                .ToList();
-
-
-            rows.Add(columns);
+        if(c == separator && !insideQuote)
+        {
+            result.Add(current.ToString().Trim());
+            current.Clear();
+        }
+        else
+        {
+            current.Append(c);
         }
     }
 
 
-    return rows;
+    result.Add(current.ToString().Trim());
+
+
+    return result;
+}
+
+private List<string> ParseCsvLine(string line)
+{
+    var result = new List<string>();
+
+    bool insideQuote = false;
+    var current = new StringBuilder();
+
+
+    for(int i = 0; i < line.Length; i++)
+    {
+        char c = line[i];
+
+
+        if(c == '"')
+        {
+            insideQuote = !insideQuote;
+            continue;
+        }
+
+
+        // séparateur uniquement si on n'est pas dans une valeur
+        if((c == '\t' || c == ';') && !insideQuote)
+        {
+            result.Add(current.ToString().Trim());
+            current.Clear();
+            continue;
+        }
+
+
+        // cas CSV séparé par virgule
+        // mais on garde les nombres comme 18,000,000.00
+        if(c == ',' && !insideQuote)
+        {
+            bool isNumberSeparator = 
+                i > 0 &&
+                i < line.Length - 1 &&
+                char.IsDigit(line[i-1]) &&
+                char.IsDigit(line[i+1]);
+
+
+            if(isNumberSeparator)
+            {
+                current.Append(c);
+                continue;
+            }
+
+
+            result.Add(current.ToString().Trim());
+            current.Clear();
+            continue;
+        }
+
+
+        current.Append(c);
+    }
+
+
+    result.Add(current.ToString().Trim());
+
+
+    return result;
 }
     public List<List<string>> ReadWorksheetRows(IFormFile file)
     {
