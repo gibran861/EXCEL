@@ -21,60 +21,51 @@ public class fluxMappingService
         _dbContext = dbContext;
     }
 
-public async Task<FluxMappingImportResult> ImportFluxMappingDataAsync(IFormFile file, CancellationToken cancellationToken = default)
+public async Task<FluxMappingImportResult> ImportFluxMappingDataAsync(
+    IFormFile file,
+    List<string>? keysAMettreAJour = null,
+    CancellationToken cancellationToken = default)
 {
     if (file == null || file.Length == 0)
+        throw new ArgumentException("Le fichier est requis.");
+
+    // Log des clés reçues du Front-end
+    Console.WriteLine($"[BACK] Nombre de clés reçues pour mise à jour : {keysAMettreAJour?.Count ?? 0}");
+    if (keysAMettreAJour != null)
     {
-        throw new ArgumentException("Le fichier Excel est requis.");
+        foreach (var k in keysAMettreAJour)
+        {
+            Console.WriteLine($"[BACK] Clé à mettre à jour demandée par le Front : '{k}'");
+        }
     }
 
-    // 1. Lecture de toutes les lignes du fichier Excel via vos méthodes ExcelDataReader existantes
-    var rows = ReadWorksheetRows(file);
-
+    var rows = ReadFile(file);
     if (rows == null || rows.Count == 0)
-    {
-        throw new InvalidOperationException("Le fichier Excel ne contient aucune donnée.");
-    }
+        throw new InvalidOperationException("Le fichier est vide.");
 
-    // On suppose ici que la première ligne (index 0) contient vos en-têtes : Flux, Keyword, BankCode
-    var headerRow = rows[0];
-    var fluxCol = FindColumnIndex(headerRow, "Flux");
-    var keywordCol = FindColumnIndex(headerRow, "Keyword");
-    var bankCodeCol = FindColumnIndex(headerRow, "BankCode");
+    var header = rows[0];
+    int fluxCol = FindColumnIndex(header, "Flux");
+    int keywordCol = FindColumnIndex(header, "Keyword");
+    int bankCodeCol = FindColumnIndex(header, "BankCode");
 
     if (fluxCol < 0 || keywordCol < 0)
-    {
-        throw new InvalidOperationException("Une ou plusieurs colonnes requises ('Flux' ou 'Keyword') sont manquantes dans les en-têtes.");
-    }
+        throw new InvalidOperationException("Colonnes Flux ou Keyword manquantes.");
 
-    var result = new FluxMappingImportResult { TotalRows = rows.Count - 1 };
+    var keysToUpdate = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    if (keysAMettreAJour != null)
+        foreach (var k in keysAMettreAJour)
+            keysToUpdate.Add(k);
+
     var excelItems = new List<FluxMapping>();
-
-    // 2. Extraction et parcours des données (on saute la ligne d'en-tête index 0)
     for (int i = 1; i < rows.Count; i++)
     {
         var row = rows[i];
-        int rowNumber = i + 1; // Utile pour cibler la ligne Excel réelle en cas d'erreur
-
         var flux = GetCell(row, fluxCol)?.Trim();
         var keyword = GetCell(row, keywordCol)?.Trim();
-        
-        // Le BankCode est optionnel, on gère l'absence de colonne ou la valeur vide
         var bankCode = bankCodeCol >= 0 ? GetCell(row, bankCodeCol)?.Trim() : null;
 
-        // Sauter la ligne si elle est complètement vide
-        if (string.IsNullOrWhiteSpace(flux) && string.IsNullOrWhiteSpace(keyword))
-        {
-            continue;
-        }
-
-        // Validation des champs obligatoires
         if (string.IsNullOrWhiteSpace(flux) || string.IsNullOrWhiteSpace(keyword))
-        {
-            result.ErrorCount++;
-            result.Errors.Add($"Ligne {rowNumber} : Les colonnes 'Flux' et 'Keyword' ne peuvent pas être vides.");
             continue;
-        }
 
         excelItems.Add(new FluxMapping
         {
@@ -82,47 +73,120 @@ public async Task<FluxMappingImportResult> ImportFluxMappingDataAsync(IFormFile 
             Keyword = keyword,
             BankCode = string.IsNullOrWhiteSpace(bankCode) ? null : bankCode,
             IsActive = true,
-            Operator = "ANY", // Valeur par défaut
-            TargetAmount = 0   // Valeur par défaut
+            Operator = "ANY",
+            TargetAmount = 0
         });
     }
 
-    // 3. Récupération des règles existantes en BDD pour éviter les doublons (Clé composite ou Keyword unique)
-    var existingMappings = await _dbContext.FluxMappings
-        .ToListAsync(cancellationToken);
-
-    // On crée un Set de comparaison (ex: basé sur Keyword + BankCode)
-    var existingSet = new HashSet<string>(
-        existingMappings.Select(x => $"{x.Keyword?.ToUpperInvariant()}_{x.BankCode?.ToUpperInvariant()}"), 
-        StringComparer.OrdinalIgnoreCase
-    );
+    var existing = await _dbContext.FluxMappings.ToListAsync(cancellationToken);
+    var dict = existing
+        .GroupBy(x => $"{x.Flux}_{x.Keyword}_{x.BankCode}".ToUpperInvariant())
+        .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
     var toInsert = new List<FluxMapping>();
+    var duplicates = new List<FluxMappingDuplicateItem>();
+    int updated = 0;
+    int skipped = 0;
 
-    // 4. Filtrage
     foreach (var item in excelItems)
     {
-        var key = $"{item.Keyword?.ToUpperInvariant()}_{item.BankCode?.ToUpperInvariant()}";
-        
-        if (existingSet.Contains(key))
+        var key = $"{item.Flux}_{item.Keyword}_{item.BankCode}".ToUpperInvariant();
+
+        if (dict.TryGetValue(key, out var existingItem))
         {
-            result.ErrorCount++;
-            result.Errors.Add($"Le mot-clé '{item.Keyword}' pour la banque '{item.BankCode ?? "TOUTES"}' existe déjà en base de données.");
+            // Vérification si la clé générée correspond EXACTEMENT à une clé reçue
+            bool containsKey = keysToUpdate.Contains(key);
+            Console.WriteLine($"[BACK] Doublon détecté pour la clé : '{key}'. Présente dans keysToUpdate ? {containsKey}");
+
+            if (containsKey)
+            {
+                Console.WriteLine($"[BACK] -> ACTION : MISE À JOUR de la clé '{key}'");
+                existingItem.Flux = item.Flux;
+                existingItem.Keyword = item.Keyword;
+                existingItem.BankCode = item.BankCode;
+                updated++;
+            }
+            else
+            {
+                Console.WriteLine($"[BACK] -> ACTION : IGNORER la clé '{key}'");
+                duplicates.Add(new FluxMappingDuplicateItem
+                {
+                    Code = key,
+                    Libelle = item.Flux
+                });
+                skipped++;
+            }
             continue;
         }
 
         toInsert.Add(item);
-        result.ImportedCount++;
     }
 
-    // 5. Sauvegarde en Base de Données
-    if (toInsert.Count > 0)
-    {
+    if (toInsert.Any())
         await _dbContext.FluxMappings.AddRangeAsync(toInsert, cancellationToken);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+
+    await _dbContext.SaveChangesAsync(cancellationToken);
+
+    Console.WriteLine($"[BACK] Bilan final -> Insérés: {toInsert.Count}, Modifiés: {updated}, Ignorés: {skipped}");
+
+    return new FluxMappingImportResult
+    {
+        TotalRows = rows.Count - 1,
+        ImportedCount = toInsert.Count,
+        UpdatedCount = updated,
+        ErrorCount = skipped,
+        Duplicates = duplicates
+    };
+}
+
+private List<List<string>> ReadFile(IFormFile file)
+{
+    var ext = Path.GetExtension(file.FileName)
+                  .ToLowerInvariant();
+
+
+    if(ext == ".csv")
+        return ReadCsv(file);
+
+
+    if(ext == ".xlsx" || ext == ".xls")
+        return ReadWorksheetRows(file);
+
+
+    throw new Exception("Format non supporté");
+}
+private List<List<string>> ReadCsv(IFormFile file)
+{
+    var rows = new List<List<string>>();
+
+
+    using var reader =
+        new StreamReader(file.OpenReadStream());
+
+
+    while(!reader.EndOfStream)
+    {
+        var line = reader.ReadLine();
+
+
+        if(string.IsNullOrWhiteSpace(line))
+            continue;
+
+
+        char separator =
+            line.Contains(";") ? ';' : ',';
+
+
+
+        rows.Add(
+            line.Split(separator)
+            .Select(x=>x.Trim())
+            .ToList()
+        );
     }
 
-    return result;
+
+    return rows;
 }
    public string GetCell(List<string> row, int columnIndex)
     {

@@ -17,3 +17,4 @@ public class FluxImportResult
     /// </summary>
     public int SkippedExistingCount { get; set; }
 }
+

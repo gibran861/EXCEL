@@ -100,25 +100,23 @@ namespace AfbGenerator.Server.Controllers
             return Ok(new { Message = "Mapping supprimé avec succès." });
         }
 
-        [HttpPost("import-excel")]
+[HttpPost("import-excel")]
 [Consumes("multipart/form-data")]
-[ProducesResponseType(typeof(FluxMappingImportResult), StatusCodes.Status200OK)]
-[ProducesResponseType(StatusCodes.Status400BadRequest)]
-public async Task<ActionResult<FluxMappingImportResult>> ImportFluxMappingExcel(IFormFile file, CancellationToken cancellationToken)
+public async Task<ActionResult<FluxMappingImportResult>> ImportExcel(
+    IFormFile file,
+    [FromForm] List<string>? keysAMettreAJour = null, // Changement ici : de string? à List<string>?
+    CancellationToken cancellationToken = default)
 {
-    try
-    {
-        var result = await _fluxMappingService.ImportFluxMappingDataAsync(file, cancellationToken);
-        return Ok(result);
-    }
-    catch (ArgumentException ex)
-    {
-        return BadRequest(new { message = ex.Message });
-    }
-    catch (InvalidOperationException ex)
-    {
-        return BadRequest(new { message = ex.Message });
-    }
+    // ... vos vérifications de fichier (ex: if (file == null || file.Length == 0) ...)
+
+    // Plus besoin de désérialisation manuelle ! .NET a déjà tout mis dans la liste.
+    // On s'assure juste d'avoir une liste vide au lieu de null si rien n'est coché
+    var listKeys = keysAMettreAJour ?? new List<string>();
+
+    // Appelez ensuite votre service en lui passant 'listKeys'
+    var result = await _fluxMappingService.ImportFluxMappingDataAsync(file, listKeys, cancellationToken);
+    
+    return Ok(result);
 }
     }
 
