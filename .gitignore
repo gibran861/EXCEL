@@ -1,0 +1,95 @@
+# Build results
+
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+
+# Visual Studio
+
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+**/bin/
+**/obj/
+# Visual Studio Code
+
+.vscode/
+
+# Rider
+
+.idea/
+
+# NuGet
+
+*.nupkg
+packages/
+!packages/build/
+*.snupkg
+
+# ASP.NET Core
+
+appsettings.Development.json
+appsettings.Local.json
+
+# Secrets
+
+secrets.json
+*.pfx
+*.p12
+*.key
+*.pem
+*.crt
+
+# Logs
+
+*.log
+logs/
+
+# Entity Framework
+
+*.dbmdl
+
+# Publish output
+
+publish/
+wwwroot/uploads/
+
+# Test Results
+
+TestResults/
+*.trx
+
+# Coverage
+
+coverage/
+coverage.xml
+*.coverage
+*.coveragexml
+
+# Node modules (if Angular/React frontend is in same repo)
+
+node_modules/
+dist/
+.angular/
+
+# OS files
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+
+tmp/
+temp/
+*.tmp
+
+# Generated files
+
+Generated/
+ScaffoldingReadMe.txt
