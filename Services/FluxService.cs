@@ -210,218 +210,152 @@ public async Task<FluxResponse> SetCibByBankAndFluxAsync(
 		};
 	}
 
-	public async Task<(int inserted, int updated, List<string> errors)> ImportFluxFromExcelAsync(
+	public async Task<(int inserted, int updated, int skipped, List<object> duplicates, List<string> errors)> ImportFluxFromExcelAsync(
     IFormFile file,
+    string? codesAMettreAJour,
     CancellationToken cancellationToken)
 {
     var errors = new List<string>();
-
+    var duplicates = new List<object>();
+    
     int insertedCount = 0;
     int updatedCount = 0;
+    int skippedCount = 0;
 
+    // 1. Désérialiser la liste des codes à mettre à jour
+    var codesToUpdate = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    if (!string.IsNullOrWhiteSpace(codesAMettreAJour))
+    {
+        var parsed = System.Text.Json.JsonSerializer.Deserialize<List<string>>(codesAMettreAJour);
+        if (parsed != null)
+        {
+            foreach (var c in parsed) codesToUpdate.Add(c.Trim());
+        }
+    }
 
-    System.Text.Encoding.RegisterProvider(
-        System.Text.CodePagesEncodingProvider.Instance);
-
-
+    System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
 
     using var stream = file.OpenReadStream();
-
-
-    var extension = Path.GetExtension(file.FileName)
-        .ToLowerInvariant();
-
-
-
+    var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
     IExcelDataReader reader;
 
-
-    // ==========================
-    // MODIFICATION ICI
-    // ==========================
-
-    if (extension == ".csv")
-    {
-        reader = ExcelReaderFactory.CreateCsvReader(stream);
-    }
-    else if (extension == ".xls" || extension == ".xlsx")
-    {
-        reader = ExcelReaderFactory.CreateReader(stream);
-    }
+    if (extension == ".csv") reader = ExcelReaderFactory.CreateCsvReader(stream);
+    else if (extension == ".xls" || extension == ".xlsx") reader = ExcelReaderFactory.CreateReader(stream);
     else
     {
         errors.Add("Format de fichier non supporté.");
-        return (0, 0, errors);
+        return (0, 0, 0, duplicates, errors);
     }
 
-
+    // Structure temporaire pour stocker les lignes du fichier lues en mémoire
+    var fileRows = new List<(string Code, string? TypeFlux, string? Libelle, string? Sens)>();
 
     using (reader)
     {
-
         int rowIndex = 0;
-
-
-        int colCode = -1;
-        int colType = -1;
-        int colLibelle = -1;
-        int colSens = -1;
-
-
+        int colCode = -1, colType = -1, colLibelle = -1, colSens = -1;
 
         while (reader.Read())
         {
             rowIndex++;
 
-
-
-            // HEADER
+            // Lecture de l'entête
             if (rowIndex == 1)
             {
-
                 for (int i = 0; i < reader.FieldCount; i++)
                 {
-                    var headerValue =
-                        reader.GetValue(i)?
-                        .ToString()?
-                        .Trim()
-                        .ToUpperInvariant();
+                    var headerValue = reader.GetValue(i)?.ToString()?.Trim().ToUpperInvariant();
 
-
-
-                    if (headerValue == "CODE")
-                        colCode = i;
-
-
-                    else if (headerValue == "TYPE FLUX"
-                          || headerValue == "TYPEFLUX")
-                        colType = i;
-
-
-                    else if (headerValue == "LIBELLE"
-                          || headerValue == "LIBELLÉ")
-                        colLibelle = i;
-
-
-                    else if (headerValue == "SENS")
-                        colSens = i;
+                    if (headerValue == "CODE") colCode = i;
+                    else if (headerValue == "TYPE FLUX" || headerValue == "TYPEFLUX") colType = i;
+                    else if (headerValue == "LIBELLE" || headerValue == "LIBELLÉ") colLibelle = i;
+                    else if (headerValue == "SENS") colSens = i;
                 }
 
-
-
-                if (colCode == -1 ||
-                    colType == -1 ||
-                    colLibelle == -1 ||
-                    colSens == -1)
+                if (colCode == -1 || colType == -1 || colLibelle == -1 || colSens == -1)
                 {
-                    errors.Add(
-                    "Le fichier doit contenir : Code, Type flux, Libelle, SENS");
-
-                    return (0,0,errors);
+                    errors.Add("Le fichier doit contenir les colonnes : Code, Type flux, Libelle, SENS");
+                    return (0, 0, 0, duplicates, errors);
                 }
-
-
                 continue;
             }
 
+            // Lecture des données
+            var code = reader.GetValue(colCode)?.ToString()?.Trim().ToUpperInvariant();
+            if (string.IsNullOrWhiteSpace(code)) continue;
 
+            var typeFlux = reader.GetValue(colType)?.ToString()?.Trim();
+            var libelle = reader.GetValue(colLibelle)?.ToString()?.Trim();
+            var sens = reader.GetValue(colSens)?.ToString()?.Trim().ToUpperInvariant();
 
-
-
-            var code =
-                reader.GetValue(colCode)?
-                .ToString()?
-                .Trim()
-                .ToUpperInvariant();
-
-
-
-            var typeFlux =
-                reader.GetValue(colType)?
-                .ToString()
-                ?.Trim();
-
-
-
-            var libelle =
-                reader.GetValue(colLibelle)?
-                .ToString()
-                ?.Trim();
-
-
-
-            var sens =
-                reader.GetValue(colSens)?
-                .ToString()
-                ?.Trim()
-                .ToUpperInvariant();
-
-
-
-
-            if (string.IsNullOrWhiteSpace(code))
-                continue;
-
-
-
-            var existingFlux =
-                await _dbContext.Flux
-                .FirstOrDefaultAsync(
-                    x => x.Code == code,
-                    cancellationToken);
-
-
-
-            if(existingFlux == null)
-            {
-
-                var newFlux = new NEWFlux
-                {
-                    Code = code,
-
-                    TypeFlux = typeFlux,
-
-                    Libelle = libelle,
-
-                    Sens = sens,
-
-                    IsActive = true,
-
-                    CreatedAt = DateTime.UtcNow
-                };
-
-
-                await _dbContext.Flux
-                    .AddAsync(newFlux, cancellationToken);
-
-
-                insertedCount++;
-
-            }
-            else
-            {
-
-                existingFlux.TypeFlux = typeFlux;
-
-                existingFlux.Libelle = libelle;
-
-                existingFlux.Sens = sens;
-
-
-                updatedCount++;
-            }
+            fileRows.Add((code, typeFlux, libelle, sens));
         }
     }
 
+    if (!fileRows.Any())
+    {
+        errors.Add("Le fichier est vide.");
+        return (0, 0, 0, duplicates, errors);
+    }
 
+    // 2. Collecter tous les codes uniques du fichier pour requêter la BDD une seule fois
+    var codesInFile = fileRows.Select(r => r.Code).Distinct().ToList();
+
+    var existingFluxDict = await _dbContext.Flux
+        .Where(x => codesInFile.Contains(x.Code))
+        .ToDictionaryAsync(x => x.Code, StringComparer.OrdinalIgnoreCase, cancellationToken);
+
+    var toInsert = new List<NEWFlux>();
+
+    // 3. Traitement des lignes
+    foreach (var row in fileRows)
+    {
+        if (existingFluxDict.TryGetValue(row.Code, out var existingFlux))
+        {
+            // Si le code est dans la liste des éléments à écraser/mettre à jour
+            if (codesToUpdate.Contains(row.Code))
+            {
+                existingFlux.TypeFlux = row.TypeFlux;
+                existingFlux.Libelle = row.Libelle;
+                existingFlux.Sens = row.Sens;
+                updatedCount++;
+            }
+            else
+            {
+                // Sinon, on ignore et on l'ajoute aux doublons détectés pour le front-end
+                duplicates.Add(new { code = row.Code, libelle = row.Libelle });
+                skippedCount++;
+            }
+        }
+        else
+        {
+            // Nouvel enregistrement
+            toInsert.Add(new NEWFlux
+            {
+                Code = row.Code,
+                TypeFlux = row.TypeFlux,
+                Libelle = row.Libelle,
+                Sens = row.Sens,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow
+            });
+            insertedCount++;
+        }
+    }
+
+    // 4. Sauvegarde groupée en base de données
+    if (toInsert.Any())
+    {
+        await _dbContext.Flux.AddRangeAsync(toInsert, cancellationToken);
+    }
 
     await _dbContext.SaveChangesAsync(cancellationToken);
-
-
 
     return (
         insertedCount,
         updatedCount,
+        skippedCount,
+        duplicates,
         errors
     );
 }
