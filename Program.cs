@@ -3,7 +3,8 @@ using AfbGenerator.Api.Services;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
-
+// ← AJOUTER CETTE LIGNE
+builder.Host.UseWindowsService();
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();

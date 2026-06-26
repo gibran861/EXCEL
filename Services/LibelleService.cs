@@ -646,63 +646,178 @@ public async Task<DetectCategorieResult> DetectCategorieAsync(
     if (string.IsNullOrWhiteSpace(libelle))
         throw new ArgumentException("Libelle obligatoire");
 
+
     var text = NormalizeKeyword(libelle).ToUpperInvariant();
+
 
     var databaseMappings = await _dbContext.FluxMappings
         .Where(m => m.IsActive)
         .ToListAsync(cancellationToken);
 
+
     var candidates = new List<(FluxMapping item, int score, int position)>();
+
 
     foreach (var item in databaseMappings)
     {
         var keywordUpper = item.Keyword.ToUpperInvariant();
 
+
         if (!text.Contains(keywordUpper))
             continue;
 
+
+
+        // ============================
         // Vérification BankCode
-        bool isBankValid = string.IsNullOrWhiteSpace(item.BankCode) ||
-                           item.BankCode.Equals(currentBankCode, StringComparison.OrdinalIgnoreCase);
+        // ============================
+        bool isBankValid =
+            string.IsNullOrWhiteSpace(item.BankCode) ||
+            item.BankCode.Equals(
+                currentBankCode,
+                StringComparison.OrdinalIgnoreCase);
+
+
         if (!isBankValid)
             continue;
 
+
+
+        // ============================
         // Vérification Montant
-        string op = string.IsNullOrWhiteSpace(item.Operator) ? "ANY" : item.Operator.ToUpperInvariant();
+        // ============================
+        string op = string.IsNullOrWhiteSpace(item.Operator)
+            ? "ANY"
+            : item.Operator.ToUpperInvariant();
+
+
         decimal targetAmt = item.TargetAmount ?? 0;
-        bool isAmountValid = op == "ANY" || op switch
+
+
+        bool isAmountValid = op switch
         {
-            "<=" => transactionAmount <= targetAmt,
-            "==" => transactionAmount == targetAmt,
-            ">=" => transactionAmount >= targetAmt,
-            "<"  => transactionAmount < targetAmt,
-            ">"  => transactionAmount > targetAmt,
-            _    => true
+            "ANY" => true,
+            "<="  => transactionAmount <= targetAmt,
+            "=="  => transactionAmount == targetAmt,
+            ">="  => transactionAmount >= targetAmt,
+            "<"   => transactionAmount < targetAmt,
+            ">"   => transactionAmount > targetAmt,
+            _     => true
         };
+
 
         if (!isAmountValid)
             continue;
 
-        // Score de spécificité (BankCode + Operator)
-        int score = 0;
-        score += string.IsNullOrWhiteSpace(item.BankCode) ? 0 : 20;
-        score += (op == "ANY") ? 0 : 30;
 
-        // ✅ Position du mot-clé dans le libellé
+
+        // ============================
+        // Calcul score
+        // ============================
+        int score = 0;
+
+
+
+        // Règle Bank
+        if (!string.IsNullOrWhiteSpace(item.BankCode))
+            score += 20;
+
+
+
+        // Règle montant
+        if (op != "ANY")
+            score += 30;
+
+
+
+        // ============================
+        // Règle Crédit / Débit
+        // ============================
+        if (transactionAmount > 0)
+        {
+            // Crédit : remise chèque => ENCH
+            if (item.Flux.Contains(
+                "ENCH",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                score += 50;
+            }
+
+
+            // éviter DEP pour un crédit
+            if (item.Flux.Contains(
+                "DEP",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                score -= 30;
+            }
+        }
+
+
+
+        if (transactionAmount < 0)
+        {
+            // Débit : DEP1/DEP2
+            if (item.Flux.Contains(
+                "DEP",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                score += 50;
+            }
+
+
+            // éviter ENCH pour un débit
+            if (item.Flux.Contains(
+                "ENCH",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                score -= 30;
+            }
+        }
+
+
+
+
+        // ============================
+        // Position du mot clé
+        // ============================
         int position = text.IndexOf(keywordUpper);
 
-        candidates.Add((item, score, position));
+
+
+        candidates.Add(
+            (
+                item,
+                score,
+                position
+            ));
     }
 
-    if (candidates.Count == 0)
-        return new DetectCategorieResult { Libelle = libelle, IsDetected = false };
 
-    // ✅ Tri final : spécificité d'abord, puis position, puis longueur du mot-clé
+
+    // Aucun résultat
+    if (candidates.Count == 0)
+    {
+        return new DetectCategorieResult
+        {
+            Libelle = libelle,
+            IsDetected = false
+        };
+    }
+
+
+
+    // ============================
+    // Choix meilleure règle
+    // ============================
     var best = candidates
-        .OrderByDescending(c => c.score)                           // 1. Règle la plus spécifique (BankCode + Operator)
-        .ThenBy(c => c.position)                                   // 2. Mot-clé le plus tôt dans le libellé
-        .ThenByDescending(c => c.item.Keyword.Length)              // 3. Mot-clé le plus long
-        .First().item;
+        .OrderByDescending(c => c.score)
+        .ThenBy(c => c.position)
+        .ThenByDescending(c => c.item.Keyword.Length)
+        .First()
+        .item;
+
+
 
     return new DetectCategorieResult
     {
