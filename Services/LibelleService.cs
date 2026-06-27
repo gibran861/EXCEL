@@ -931,4 +931,71 @@ public async Task<ExcelFluxExtractResult> ExtractAndSaveFluxFromExcelAsync(IForm
         DetectedFluxCodes = uniqueFluxCodesInFile.ToList()
     };
 }
+// LibelleService.cs  — nouvelles méthodes
+
+public List<string> ReadRawLines(IFormFile file)
+{
+    using var reader = new StreamReader(file.OpenReadStream(), Encoding.UTF8);
+    var lines = new List<string>();
+    while (!reader.EndOfStream)
+    {
+        var line = reader.ReadLine();
+        if (line != null) lines.Add(line);
+    }
+    return lines;
+}
+
+// Parse les lignes brutes en List<List<string>> selon le format
+public List<List<string>> ParseLinesWithFormat(
+    List<string> rawLines,
+    BankFileFormat format)
+{
+    var sep    = format.Separator == "\\t" ? "\t" : format.Separator;
+    var result = new List<List<string>>();
+
+    foreach (var line in rawLines)
+    {
+        result.Add(ParseCsvLine(line, sep[0]));
+    }
+
+    return result;
+}
+
+// Retrouve l'index de la ligne d'entête via HeaderPattern
+public int FindHeaderRowByPattern(List<string> rawLines, string pattern)
+{
+    for (int i = 0; i < rawLines.Count; i++)
+    {
+        if (rawLines[i].Contains(pattern, StringComparison.OrdinalIgnoreCase))
+            return i;
+    }
+    return -1;
+}
+
+// Résout le numéro de compte selon le format
+// Soit depuis une colonne, soit depuis la ligne "Compte courant" (compatibilité ancienne)
+public string ResolveAccountNumber(
+    List<List<string>> rows,
+    int headerRowIndex,
+    List<string> headerCells,
+    BankFileFormat format,
+    ColumnMapping mapping)
+{
+    // Cas 1 : colonne dédiée dans le header
+    if (!string.IsNullOrWhiteSpace(mapping.AccountNumber))
+    {
+        // On cherche dans la première ligne de données
+        int colIdx = FindColumnIndex(headerCells, mapping.AccountNumber);
+        if (colIdx >= 0 && rows.Count > headerRowIndex + 1)
+            return GetCell(rows[headerRowIndex + 1], colIdx).Trim();
+    }
+
+    // Cas 2 : ligne "Compte courant" (format Excel ancien)
+    int compteRow = FindRowContaining(rows, "Compte courant");
+    if (compteRow >= 0)
+        return GetCell(rows[compteRow], 1).Trim().Replace(" ", "");
+
+    // Cas 3 : valeur fixe dans le format (à ajouter si besoin)
+    return string.Empty;
+}
 }

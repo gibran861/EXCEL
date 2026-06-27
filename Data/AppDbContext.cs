@@ -16,7 +16,8 @@ public class AppDbContext : DbContext
     public DbSet<NEWFlux> Flux { get; set; }
     public DbSet<Cib> Cib { get; set; }
     public DbSet<FluxMapping> FluxMappings { get; set; }
-    
+    // Dans AppDbContext.cs
+public DbSet<BankFileFormat> BankFileFormats { get; set; }
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);

@@ -17,6 +17,8 @@ builder.Services.AddDbContext<XrtDbContext>(options =>
 
 // Dependency injection registration placeholders
 builder.Services.AddScoped<FluxService>();
+// Program.cs
+builder.Services.AddScoped<BankFileFormatService>();
 builder.Services.AddScoped<LibelleService>();
 builder.Services.AddScoped<XrtSyncService>();
 builder.Services.AddScoped<CibService>();
