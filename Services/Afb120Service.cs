@@ -417,7 +417,308 @@ namespace AfbGenerator.Api.Services
             _logger = logger;
              _formatService = formatService;
         }
+public async Task<GenerateResultDto> GenerateFromFileAsync3(IFormFile file, string? outputPath = null, CancellationToken cancellationToken = default)
+{
+    if (file == null || file.Length == 0)
+        throw new ArgumentException("Le fichier est obligatoire.");
 
+    // ── 1. DÉTECTION DYNAMIQUE DU FORMAT BANCAIRE ───────────────────────────
+    var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
+    List<string> rawLinesForDetection = new List<string>();
+
+    if (extension is ".xlsx" or ".xls")
+    {
+        rawLinesForDetection = BuildRawLinesFromExcel(file);
+    }
+    else
+    {
+        using var reader = new StreamReader(file.OpenReadStream(), Encoding.UTF8, true);
+        int lineCount = 0;
+        while (!reader.EndOfStream && lineCount < 25) // Poussé à 25 pour couvrir les gros en-têtes
+        {
+            var line = await reader.ReadLineAsync();
+            if (!string.IsNullOrWhiteSpace(line))
+            {
+                var cleanedLine = line.Replace("\r", "").Replace("\n", "").Trim();
+                rawLinesForDetection.Add(cleanedLine);
+                lineCount++;
+            }
+        }
+    }
+
+    var matchedFormat = await _formatService.DetectFormatAsync(rawLinesForDetection, cancellationToken);
+    if (matchedFormat == null)
+        throw new InvalidOperationException("Impossible de générer le fichier : format de fichier bancaire inconnu.");
+
+    var mapping = _formatService.DeserializeMapping(matchedFormat);
+
+    // ── 2. LECTURE COMPLÈTE DES LIGNES EN TABLEAU DE CHAÎNES ────────────────
+    List<List<string>> rows = extension switch
+    {
+        ".csv" => _libelleService.ReadCsvRows(file),
+        ".xlsx" or ".xls" => _libelleService.ReadWorksheetRows(file),
+        _ => throw new ArgumentException($"Format de fichier non supporté : '{extension}'.")
+    };
+
+    // Récupération immédiate de l'index de la ligne d'en-tête d'après la configuration
+    var headerRowIndex = _libelleService.FindRowContaining(rows, matchedFormat.HeaderPattern);
+    if (headerRowIndex < 0) headerRowIndex = _libelleService.FindHeaderRowIndex(rows); // Fallback
+    if (headerRowIndex < 0) throw new InvalidOperationException("Entête des transactions introuvable.");
+    
+    var headerRow = rows[headerRowIndex];
+
+    // ── 3. EXTRACTION ADAPTATIVE ET 100% GÉNÉRIQUE DES MÉTADONNÉES ──────────
+    string bankCode = string.Empty;
+    decimal initialBalance = 0;
+    DateTime fileStartDate = DateTime.Now;
+    DateTime fileEndDate = DateTime.Now;
+
+    // Concaténation de toutes les lignes pour faciliter les recherches par Regex sur l'ensemble du fichier
+    var flatRowsText = rows.Select(r => string.Join(" ", r)).ToList();
+
+    // 3.1 Extraction du Numéro de Compte
+    string accountIndicator = matchedFormat.AccountNumberColumnName ?? "Numéro de compte"; 
+    int accountRowIdx = _libelleService.FindRowContaining(rows, accountIndicator);
+    if (accountRowIdx >= 0)
+    {
+        var rawLine = string.Join(" ", rows[accountRowIdx]);
+        // Extraction du premier bloc numérique long (RIB / Compte) ou nettoyage global si non trouvé
+        var matchCompte = System.Text.RegularExpressions.Regex.Match(rawLine.Replace(" ", ""), @"\d{10,25}");
+        bankCode = matchCompte.Success ? matchCompte.Value : System.Text.RegularExpressions.Regex.Replace(rawLine, @"[^\d]", "");
+    }
+    if (string.IsNullOrEmpty(bankCode)) 
+        throw new InvalidOperationException($"Impossible d'extraire le numéro de compte avec l'indicateur '{accountIndicator}'.");
+
+    // 3.2 Extraction des Dates (Période)
+    string startIndicator = matchedFormat.StartDateColumnName ?? "Période";
+    int dateRowIdx = _libelleService.FindRowContaining(rows, startIndicator);
+    if (dateRowIdx >= 0)
+    {
+        var rawLine = string.Join(" ", rows[dateRowIdx]);
+        // Regex adaptative qui attrape le format ISO (2026-05-01) ou FR (01/05/2026)
+        var dateMatches = System.Text.RegularExpressions.Regex.Matches(rawLine, @"\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4}");
+        if (dateMatches.Count >= 2)
+        {
+            DateTime.TryParse(dateMatches[0].Value, out fileStartDate);
+            DateTime.TryParse(dateMatches[1].Value, out fileEndDate);
+        }
+    }
+
+    // 3.3 Extraction du Solde Initial
+    string balanceIndicator = matchedFormat.InitialBalanceColumnName ?? "Solde initial";
+    int balanceRowIdx = _libelleService.FindRowContaining(rows, balanceIndicator);
+    if (balanceRowIdx >= 0)
+    {
+        var rawLine = string.Join(" ", rows[balanceRowIdx]);
+        if (rawLine.Contains(":"))
+        {
+            var parts = rawLine.Split(':');
+            if (parts.Length > 1) initialBalance = _libelleService.ParseFlexibleAmount(parts[1].Trim());
+        }
+        else
+        {
+            // Fallback : Si l'indicateur est sur la même ligne qu'un tableau (ex: BNDA), on cherche le premier montant de la ligne
+            var matchAmount = System.Text.RegularExpressions.Regex.Match(rawLine, @"\d+[\s,.]?\d*");
+            if (matchAmount.Success) initialBalance = _libelleService.ParseFlexibleAmount(matchAmount.Value);
+        }
+    }
+    else
+    {
+        // Fallback BICICI : extraction depuis la première ligne de données dans la colonne "Solde"
+        var soldeColIndex = _libelleService.FindColumnIndex(headerRow, "Solde");
+        if (soldeColIndex >= 0 && rows.Count > (headerRowIndex + 1))
+        {
+            string rawSolde = _libelleService.GetCell(rows[headerRowIndex + 1], soldeColIndex).Trim();
+            initialBalance = _libelleService.ParseFlexibleAmount(rawSolde);
+        }
+    }
+
+    // ── 4. MAPPING DYNAMIQUE DES COLONNES DEPUIS LE JSON ─────────────────────
+    var dateOperationCol = !string.IsNullOrEmpty(mapping.DateOp) ? _libelleService.FindColumnIndex(headerRow, mapping.DateOp) : -1;
+    var montantCol       = !string.IsNullOrEmpty(mapping.Montant) ? _libelleService.FindColumnIndex(headerRow, mapping.Montant) : -1;
+    var deviseCol        = !string.IsNullOrEmpty(mapping.Devise) ? _libelleService.FindColumnIndex(headerRow, mapping.Devise) : -1;
+    var libelleCol       = !string.IsNullOrEmpty(mapping.Libelle) ? _libelleService.FindColumnIndex(headerRow, mapping.Libelle) : -1;
+    var dateValeurCol    = !string.IsNullOrEmpty(mapping.DateVal) ? _libelleService.FindColumnIndex(headerRow, mapping.DateVal) : -1;
+
+    if (dateOperationCol < 0 || montantCol < 0 || libelleCol < 0)
+    {
+        throw new InvalidOperationException("Une ou plusieurs colonnes requises (Configuration JSON vs Fichier) sont introuvables.");
+    }
+
+    // ── 5. TRAITEMENT DES LOGIQUES MÉTIER ───────────────────────────────────
+    var banqueEntity = await _context.Banques
+        .FirstOrDefaultAsync(b => b.Compte == bankCode && b.IsActive, cancellationToken);
+
+    if (banqueEntity == null)
+        throw new InvalidOperationException($"Aucune banque active configurée avec le compte '{bankCode}' n'a été trouvée.");
+
+    string currentBankCode = banqueEntity.CodeBanque;
+
+    var bankFluxConfig = await _context.Fluxes
+        .Where(f => f.BankCode == currentBankCode)
+        .ToDictionaryAsync(f => f.FluxCode.Trim().ToUpperInvariant(), f => f, cancellationToken);
+
+    var activeCurrencies    = await _currencyService.GetAllAsync(cancellationToken);
+    var currencyDecimalsMap = activeCurrencies.ToDictionary(
+        c => c.CUR_ID.Trim().ToUpperInvariant(),
+        c => (int)c.DECIMALSNUMBER);
+
+    string cleanBank    = bankCode.Length >= 5  ? bankCode[0..5]  : bankCode.PadRight(5);
+    string cleanGuichet = bankCode.Length >= 10 ? bankCode[5..10] : "00000";
+    string cleanRib     = bankCode.Length >= 11 ? bankCode[10..]  : "0";
+
+    var missingKeywords = new List<MissingMappingItem>();
+    var movements = new List<Afb120MovementRow>();
+
+    foreach (var row in rows.Skip(headerRowIndex + 1))
+    {
+        var originalLibelle = _libelleService.GetCell(row, libelleCol).Trim();
+        var rawMontant      = _libelleService.GetCell(row, montantCol).Trim();
+        var rawDateOp       = dateOperationCol >= 0 ? _libelleService.GetCell(row, dateOperationCol).Trim() : string.Empty;
+        var rawDateVal      = dateValeurCol >= 0 ? _libelleService.GetCell(row, dateValeurCol).Trim() : string.Empty;
+        
+        // 🛡️ FILTRE GÉNÉRIQUE DE SÉCURITÉ CONTRE LES LIGNES DE FIN / TOTALISATIONS
+        if (string.IsNullOrWhiteSpace(rawDateOp) || !DateTime.TryParse(rawDateOp, out _) ||
+            originalLibelle.StartsWith("Total", StringComparison.OrdinalIgnoreCase) || 
+            originalLibelle.Contains("Solde", StringComparison.OrdinalIgnoreCase))
+        {
+            continue; // On passe la ligne inutile ou résumé de fin de page
+        }
+
+        var devise = deviseCol >= 0 ? _libelleService.GetCell(row, deviseCol).Trim() : string.Empty;
+        if (string.IsNullOrWhiteSpace(devise)) devise = matchedFormat.DefaultCurrency ?? "XOF";
+
+        if (string.IsNullOrWhiteSpace(originalLibelle) && string.IsNullOrWhiteSpace(rawMontant)) continue;
+
+        decimal amount = _libelleService.ParseFlexibleAmount(rawMontant);
+
+        string sens = amount >= 0 ? "C" : "D";
+        amount = Math.Abs(amount);
+        DateTime? opDate  = DateTime.TryParse(rawDateOp,  out var d1) ? d1 : (DateTime?)null;
+        DateTime? valDate = DateTime.TryParse(rawDateVal, out var d2) ? d2 : (DateTime?)null;
+
+        string cib1 = "  ";
+        string cib2 = "    ";
+
+        var normalizedLibelle = _libelleService.NormalizeKeyword(originalLibelle);
+        var detection = await _libelleService.DetectCategorieAsync(normalizedLibelle, amount, currentBankCode, cancellationToken);
+
+        if (detection != null && detection.IsDetected && !string.IsNullOrWhiteSpace(detection.Flux))
+        {
+            string cleanFluxCode = detection.Flux.Trim().ToUpperInvariant();
+
+            if (bankFluxConfig.TryGetValue(cleanFluxCode, out var fluxSetup))
+            {
+                cib1 = fluxSetup.Cib1 ?? "  ";
+                cib2 = fluxSetup.Cib2 ?? "    ";
+            }
+
+            string cleanDevise     = devise.Trim().ToUpperInvariant();
+            int    dynamicDecimals = currencyDecimalsMap.TryGetValue(cleanDevise, out var dbDecimals) ? dbDecimals : 2;
+
+            var movementRow = new Afb120MovementRow
+            {
+                BankCode       = cleanBank,
+                Guichet        = cleanGuichet,
+                Rib2           = cleanRib,
+                OperationDate  = opDate,
+                ValueDate      = valDate,
+                Amount         = amount,
+                Currency       = devise,
+                Sens           = sens,
+                Label          = originalLibelle.Length > 33 ? originalLibelle[..33] : originalLibelle,
+                Cib1           = cib1,
+                Cib2           = cib2,
+                DecimalsNumber = dynamicDecimals
+            };
+
+            movements.Add(movementRow);
+        }
+        else
+        {
+            if (!string.IsNullOrWhiteSpace(originalLibelle))
+            {
+                missingKeywords.Add(new MissingMappingItem
+                {
+                    OriginalLabel = originalLibelle,
+                    Amount        = amount,
+                    BankCode      = currentBankCode,
+                    Reason        = "Aucun mapping flux trouvé pour ce libellé."
+                });
+            }
+        }
+    }
+
+    // ── 6. GÉNÉRATION DU FICHIER DE SORTIE ───────────────────────────────────
+    if (missingKeywords.Any())
+    {
+        throw new MissingMappingsException(missingKeywords.OrderBy(k => k.OriginalLabel).ToList());
+    }
+
+    if (!movements.Any())
+        return new GenerateResultDto { Message = "Aucune transaction valide trouvée.", TotalMouvements = 0 };
+
+    movements = movements
+        .OrderBy(m => m.OperationDate ?? DateTime.MinValue)
+        .ThenBy(m => m.Label)
+        .ThenBy(m => m.Amount)
+        .ToList();
+
+    string finalOutputDir = string.IsNullOrWhiteSpace(outputPath) ? @"C:\BankFiles\AFB120\" : outputPath;
+    Directory.CreateDirectory(finalOutputDir);
+
+    var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+    var sb        = new StringBuilder();
+    var first     = movements.First();
+
+    string openSens = initialBalance >= 0 ? "C" : "D";
+    var line01 = BuildLine01(first.BankCode, first.Guichet, first.Rib2, first.Currency, first.DecimalsNumber, fileStartDate, Math.Abs(initialBalance), openSens);
+    AssertLength(line01, "01", bankCode);
+    sb.AppendLine(line01);
+
+    var line04Count = 0;
+    foreach (var row in movements)
+    {
+        var line04 = BuildLine04(row);
+        AssertLength(line04, "04", row.Label);
+        sb.AppendLine(line04);
+        line04Count++;
+    }
+
+    var totalCredit    = movements.Where(r => r.Sens == "C").Sum(r => r.Amount);
+    var totalDebit     = movements.Where(r => r.Sens == "D").Sum(r => r.Amount);
+    var closingBalance = initialBalance + totalCredit - totalDebit;
+    string closingSens = closingBalance >= 0 ? "C" : "D";
+
+    var line07 = BuildLine07(first.BankCode, first.Guichet, first.Rib2, first.Currency, first.DecimalsNumber, fileEndDate, Math.Abs(closingBalance), closingSens);
+    AssertLength(line07, "07", bankCode);
+    sb.AppendLine(line07);
+
+    var fileName = $"AFB120_{bankCode}_{timestamp}.txt";
+    var filePath = Path.Combine(finalOutputDir, fileName);
+    await File.WriteAllTextAsync(filePath, sb.ToString(), Encoding.UTF8);
+
+    var result = new GenerateResultDto
+    {
+        Message         = $"Génération AFB120 réussie dans {finalOutputDir}",
+        NombreFichiers  = 1,
+        TotalMouvements = line04Count
+    };
+    result.Fichiers.Add(filePath);
+    result.Detail.Add(new GenerateDetailDto
+    {
+        AccountId      = bankCode,
+        Currency       = first.Currency,
+        NbMouvements   = line04Count,
+        TotalCredit    = totalCredit,
+        TotalDebit     = totalDebit,
+        SoldeOuverture = initialBalance,
+        SoldeFinal     = closingBalance,
+        Fichier        = fileName
+    });
+
+    return result;
+}
 public async Task<GenerateResultDto> GenerateFromFileAsync(IFormFile file, string? outputPath = null, CancellationToken cancellationToken = default)
 {
     if (file == null || file.Length == 0)
@@ -660,6 +961,19 @@ public async Task<GenerateResultDto> GenerateFromFileAsync(IFormFile file, strin
         var rawDateOp       = dateOperationCol >= 0 ? _libelleService.GetCell(row, dateOperationCol).Trim() : string.Empty;
         var rawDateVal      = dateValeurCol >= 0 ? _libelleService.GetCell(row, dateValeurCol).Trim() : string.Empty;
         
+        // 🛑 SÉCURITÉ SPÉCIFIQUE MANSA (Ignorer les lignes de totaux et résumés de fin de fichier)
+        if (matchedFormat.BankCode == "MANSA")
+        {
+            // Si la ligne commence par "Total" ou si le libellé contient "Solde (XOF) au"
+            if (originalLibelle.StartsWith("Total", StringComparison.OrdinalIgnoreCase) || 
+                originalLibelle.Contains("Solde", StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrWhiteSpace(rawDateOp) || 
+                !DateTime.TryParse(rawDateOp, out _))
+            {
+                continue; // On ignore complètement cette ligne et on passe à la suivante
+            }
+        }
+
         var devise          = deviseCol >= 0 ? _libelleService.GetCell(row, deviseCol).Trim() : string.Empty;
         if (string.IsNullOrWhiteSpace(devise)) devise = matchedFormat.DefaultCurrency ?? "XOF";
 
@@ -793,7 +1107,7 @@ public async Task<GenerateResultDto> GenerateFromFileAsync(IFormFile file, strin
     });
 
     return result;
-}        private static string FormatDecimals(int? decimals) => (decimals ?? 2).ToString();
+}    private static string FormatDecimals(int? decimals) => (decimals ?? 2).ToString();
 
         private static string FormatAmountAfb120(decimal amount, string sens, int decimals = 2)
         {
