@@ -25,6 +25,7 @@ builder.Services.AddScoped<CibService>();
 builder.Services.AddScoped<Afb120Service>();
 builder.Services.AddScoped<CurrencyService>();
 builder.Services.AddScoped<fluxMappingService>();
+builder.Services.AddScoped<BankTemplateService>();
 builder.Services.AddScoped<IImportService, ImportService>();
 builder.Services.AddCors(options =>
 {

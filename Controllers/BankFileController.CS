@@ -48,7 +48,7 @@ namespace AfbGenerator.Api.Controllers
         // 3. POST: api/BankFile/detect
  
 
-[HttpPost("detect")]
+[HttpPost("9dim")]
 public async Task<IActionResult> DetectFileFormat(IFormFile file, CancellationToken ct)
 {
     if (file == null || file.Length == 0)
