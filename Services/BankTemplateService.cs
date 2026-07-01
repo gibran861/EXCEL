@@ -147,7 +147,7 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
 /// <summary>
     /// Extrait les données brutes d'un fichier selon la configuration d'un modèle validé
     /// </summary>
-  public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate template)
+public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate template)
 {
     var statement = new ExtractedAccountStatement
     {
@@ -194,63 +194,109 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
     }
 
     // =========================================================================
-    // ÉTAPE 2 : Extraction Générique basée STRICTEMENT sur la structure du Modèle
+    // ÉTAPE 2 : Chargement dynamique des configurations de colonnes
     // =========================================================================
     var colDateConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_DATE");
     var colLibelleConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_LIBELLE");
+    var colDateValConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_DATE_VALEUR");
+    
+    // Les différentes configurations possibles pour le montant
     var colMontantConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_MONTANT");
+    var colDebitConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_DEBIT");
+    var colCreditConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_CREDIT");
+    var colSensConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_SENS"); // Nouvelle clé possible en BDD
 
-    if (colMontantConfig != null)
+    // Recherche de la ligne de départ (on prend le premier champ de tableau configuré disponible)
+    var anyTableField = template.Fields.FirstOrDefault(f => !f.IsHeaderField);
+    if (anyTableField != null)
     {
-        // On commence la boucle juste après la ligne d'en-tête du tableau configurée
-        int startRowIndex = colMontantConfig.TargetRowIndex + 1;
+        int startRowIndex = anyTableField.TargetRowIndex + 1;
 
         for (int i = startRowIndex; i < fileData.Rows.Count; i++)
         {
-            // Récupération dynamique selon les index de colonnes configurés en BDD
+            // Récupération sécurisée des valeurs brutes de la ligne
             string dateVal = colDateConfig != null && colDateConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colDateConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
             string libelleVal = colLibelleConfig != null && colLibelleConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colLibelleConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
+            string dateValeurVal = colDateValConfig != null && colDateValConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colDateValConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
+            
             string montantVal = colMontantConfig != null && colMontantConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colMontantConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
+            string debitVal = colDebitConfig != null && colDebitConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colDebitConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
+            string creditVal = colCreditConfig != null && colCreditConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colCreditConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
+            string sensVal = colSensConfig != null && colSensConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colSensConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
 
-            // --- CRITÈRE 1 : Interception dynamique du Solde Initial ---
+            // --- CRITÈRE 1 : Interception du Solde Initial ---
             if (!string.IsNullOrEmpty(libelleVal) && libelleVal.Contains("Solde initial", StringComparison.OrdinalIgnoreCase))
             {
                 var match = System.Text.RegularExpressions.Regex.Match(libelleVal, @"-?\d+");
                 statement.SoldeInitial = match.Success ? match.Value : string.Empty;
-                continue; // Ligne traitée, on passe à la suivante
+                continue;
             }
 
-            // --- CRITÈRE 2 : Vérification de la présence de la structure minimale exigée ---
-            // Si l'un des trois piliers obligatoires de la transaction (Date, Libellé) est complètement vide,
-            // ce n'est pas une ligne de transaction conforme au modèle (ex: lignes de commentaires sous-jacentes).
+            // --- CRITÈRE 2 : Vérification de la structure minimale ---
             if (string.IsNullOrEmpty(dateVal) || string.IsNullOrEmpty(libelleVal))
             {
                 continue;
             }
 
-            // --- CRITÈRE 3 : Élimination de la répétition des en-têtes ---
-            // Si la valeur lue est identique au libellé de l'ancre (ex: le mot "Date" ou le mot "Libellé"), on l'ignore.
+            // --- CRITÈRE 3 : Élimination des en-têtes répétés ---
             if ((colDateConfig != null && dateVal.Equals(colDateConfig.AnchorTextValue, StringComparison.OrdinalIgnoreCase)) ||
                 (colLibelleConfig != null && libelleVal.Equals(colLibelleConfig.AnchorTextValue, StringComparison.OrdinalIgnoreCase)))
             {
                 continue;
             }
 
-            // --- CRITÈRE 4 : Élimination des lignes de fin de fichier (Totaux / Synthèses) ---
-            // Si le montant ou le libellé correspond à un résumé qui casse la structure d'une transaction,
-            // (Par exemple une ligne "Total" n'a pas de date valide, ou si l'IHM a configuré un montant mais qu'ici c'est du texte)
-            // Pour valider la structure complète, on s'assure juste que la ligne ne réécrira pas des mots d'ancres connus.
+            // --- CRITÈRE 4 : Élimination des lignes de fin de fichier ---
             if (libelleVal.Contains("Total", StringComparison.OrdinalIgnoreCase) || libelleVal.Contains("Solde", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
 
-            // Si la ligne possède bien des données dans les colonnes configurées par le modèle, elle est ajoutée
+            // =========================================================================
+            // ÉTAPE 3 : ALGORITHME DE NORMALISATION DU MONTANT (GÉNÉRIQUE)
+            // =========================================================================
+            string finalDebit = "";
+            string finalCredit = "";
+
+            // CAS A : Colonnes Débit et Crédit séparées (ex: votre configuration actuelle)
+            if (colDebitConfig != null || colCreditConfig != null)
+            {
+                finalDebit = debitVal;
+                finalCredit = creditVal;
+            }
+            // CAS B : Une seule colonne Montant + une colonne de Sens (C, D, CR, DR...)
+            else if (colMontantConfig != null && colSensConfig != null && !string.IsNullOrEmpty(sensVal))
+            {
+                if (sensVal.StartsWith("D", StringComparison.OrdinalIgnoreCase) || sensVal.Equals("DR", StringComparison.OrdinalIgnoreCase))
+                    finalDebit = montantVal;
+                else if (sensVal.StartsWith("C", StringComparison.OrdinalIgnoreCase) || sensVal.Equals("CR", StringComparison.OrdinalIgnoreCase))
+                    finalCredit = montantVal;
+            }
+            // CAS C : Une seule colonne Montant signée (ex: négatif = débit, positif = crédit)
+            else if (colMontantConfig != null && !string.IsNullOrEmpty(montantVal))
+            {
+                // Nettoyage rapide pour tester le signe mathématique
+                string cleanMontant = montantVal.Replace(" ", "").Replace(",", ".");
+                if (cleanMontant.StartsWith("-"))
+                {
+                    finalDebit = montantVal.Replace("-", "").Trim(); // On retire le moins pour l'AFB si nécessaire
+                    finalCredit = "";
+                }
+                else
+                {
+                    finalDebit = "";
+                    finalCredit = montantVal;
+                }
+            }
+
+            // Ajout de la ligne avec ses montants parfaitement dispatchés
             statement.Transactions.Add(new TransactionLine
             {
                 DateOp = dateVal,
+                DateValeur = dateValeurVal,
                 Libelle = libelleVal,
-                Montant = montantVal
+                Debit = finalDebit,
+                Credit = finalCredit,
+                Montant = montantVal // Conserve la valeur brute d'origine au cas où
             });
         }
     }

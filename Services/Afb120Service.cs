@@ -364,6 +364,7 @@ using Microsoft.AspNetCore.Http;
 using AfbGenerator.Api.Data;
 using AfbGenerator.Api.Entities;
 using AfbGenerator.Api.Models;
+using System.Data;
 
 namespace AfbGenerator.Api.Services
 {
@@ -409,14 +410,307 @@ namespace AfbGenerator.Api.Services
         private readonly CurrencyService _currencyService;
         private readonly ILogger<Afb120Service> _logger;
         private readonly BankFileFormatService _formatService;
-        public Afb120Service(AppDbContext context, LibelleService libelleService, CurrencyService currencyService, ILogger<Afb120Service> logger ,BankFileFormatService formatService)
+        private readonly BankTemplateService _templateService;
+        public Afb120Service(AppDbContext context, LibelleService libelleService, CurrencyService currencyService, ILogger<Afb120Service> logger ,BankFileFormatService formatService,BankTemplateService templateService)
         {
             _context = context;
             _libelleService = libelleService;
             _currencyService = currencyService;
             _logger = logger;
              _formatService = formatService;
+             _templateService=templateService;
         }
+public async Task<GenerateResultDto> GenerateFromFilegeneriqueAsync(
+    IFormFile file, 
+    string compteCourant, 
+    string devise, 
+    string? outputPath = null, 
+    CancellationToken cancellationToken = default)
+{
+    if (file == null || file.Length == 0)
+        throw new ArgumentException("Le fichier est obligatoire.");
+
+    if (string.IsNullOrWhiteSpace(compteCourant))
+        throw new ArgumentException("Le numéro de compte courant est obligatoire.");
+
+    if (string.IsNullOrWhiteSpace(devise))
+        throw new ArgumentException("La devise est obligatoire.");
+
+    // ── 1. DÉTECTION DYNAMIQUE DU FORMAT BANCAIRE ───────────────────────────
+    var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
+    List<string> rawLinesForDetection = new List<string>();
+
+    if (extension is ".xlsx" or ".xls")
+    {
+        rawLinesForDetection = BuildRawLinesFromExcel(file);
+    }
+    else
+    {
+        using var reader = new StreamReader(file.OpenReadStream(), Encoding.UTF8, true);
+        int lineCount = 0;
+        while (!reader.EndOfStream && lineCount < 20)
+        {
+            var line = await reader.ReadLineAsync();
+            if (!string.IsNullOrWhiteSpace(line))
+            {
+                var cleanedLine = line.Replace("\r", "").Replace("\n", "").Trim();
+                rawLinesForDetection.Add(cleanedLine);
+                lineCount++;
+            }
+        }
+    }
+
+    var matchedFormat = await _formatService.DetectFormatAsync(rawLinesForDetection, cancellationToken);
+    if (matchedFormat == null)
+        throw new InvalidOperationException("Impossible de générer le fichier : format de fichier bancaire inconnu.");
+
+    // Chargement du template complet configuré en base de données pour cette banque
+    var template = await _context.BankTemplates
+    .Include(t => t.Fields)
+    .FirstOrDefaultAsync(t => t.BankName == matchedFormat.BankCode, cancellationToken);
+
+    if (template == null)
+        throw new InvalidOperationException($"Le template de configuration pour la banque {matchedFormat.BankCode} est introuvable.");
+
+    // ── 2. LECTURE DES LIGNES ET CONVERSION EN DATATABLE ─────────────────────
+    List<List<string>> rows;
+    if (extension == ".csv")
+    {
+        rows = _libelleService.ReadCsvRows(file);
+    }
+    else if (extension is ".xlsx" or ".xls")
+    {
+        rows = _libelleService.ReadWorksheetRows(file);
+    }
+    else
+    {
+        throw new ArgumentException($"Format de fichier non supporté : '{extension}'.");
+    }
+
+    // Transformation de la liste en DataTable pour alimenter ExtractData
+    DataTable fileDataTable = ConvertToDataTable(rows);
+
+    // ── 3. EXTRACTION STRUCTURÉE ET NETTOYAGE (ExtractData) ──────────────────
+    ExtractedAccountStatement extractedData = _templateService.ExtractData(fileDataTable, template);
+
+    // Nettoyage du numéro de compte passé en paramètre (uniquement les chiffres pour l'AFB)
+    string cleanAccountParam = System.Text.RegularExpressions.Regex.Replace(compteCourant, @"[^\d]", "");
+
+    decimal initialBalance = 0;
+    if (!string.IsNullOrEmpty(extractedData.SoldeInitial))
+    {
+        initialBalance = _libelleService.ParseFlexibleAmount(extractedData.SoldeInitial);
+    }
+
+    // Récupération des dates depuis le fichier ou fallback si non convertibles
+    DateTime fileStartDate = DateTime.TryParse(extractedData.DateDebut, out var startParsed) ? startParsed : DateTime.Now;
+    DateTime fileEndDate = DateTime.TryParse(extractedData.DateFin, out var endParsed) ? endParsed : DateTime.Now;
+
+    // ── 4. TRAITEMENT ET CONVERGENCE VERS LE FLUX AFB120 ─────────────────────
+    // On cherche l'entité Banque en base à l'aide du numéro de compte fourni en paramètre
+    var banqueEntity = await _context.Banques
+        .FirstOrDefaultAsync(b => b.Compte == cleanAccountParam && b.IsActive, cancellationToken);
+
+    if (banqueEntity == null)
+        throw new InvalidOperationException($"Aucune banque active configurée avec le compte '{cleanAccountParam}' n'a été trouvée dans la base de données.");
+
+    string currentBankCode = banqueEntity.CodeBanque;
+
+    var bankFluxConfig = await _context.Fluxes
+        .Where(f => f.BankCode == currentBankCode)
+        .ToDictionaryAsync(f => f.FluxCode.Trim().ToUpperInvariant(), f => f, cancellationToken);
+
+    var activeCurrencies = await _currencyService.GetAllAsync(cancellationToken);
+    var currencyDecimalsMap = activeCurrencies.ToDictionary(
+        c => c.CUR_ID.Trim().ToUpperInvariant(),
+        c => (int)c.DECIMALSNUMBER);
+
+    string cleanBank    = cleanAccountParam.Length >= 5  ? cleanAccountParam[0..5]  : cleanAccountParam.PadRight(5);
+    string cleanGuichet = cleanAccountParam.Length >= 10 ? cleanAccountParam[5..10] : "00000";
+    string cleanRib     = cleanAccountParam.Length >= 11 ? cleanAccountParam[10..]  : "0";
+
+    string cleanDeviseParam = devise.Trim().ToUpperInvariant();
+    int dynamicDecimals = currencyDecimalsMap.TryGetValue(cleanDeviseParam, out var dbDecimals) ? dbDecimals : 2;
+
+    var missingKeywords = new List<MissingMappingItem>();
+    var movements = new List<Afb120MovementRow>();
+
+    // Itération sur le résultat standardisé de ExtractData
+    foreach (var txn in extractedData.Transactions)
+    {
+        var originalLibelle = txn.Libelle?.Trim() ?? string.Empty;
+        
+        decimal amount = 0;
+        string sens = "C";
+
+        // Détermination intelligente du montant et du sens d'après la normalisation d'ExtractData
+        if (!string.IsNullOrEmpty(txn.Debit))
+        {
+            amount = _libelleService.ParseFlexibleAmount(txn.Debit);
+            sens = "D";
+        }
+        else if (!string.IsNullOrEmpty(txn.Credit))
+        {
+            amount = _libelleService.ParseFlexibleAmount(txn.Credit);
+            sens = "C";
+        }
+        else if (!string.IsNullOrEmpty(txn.Montant)) 
+        {
+            amount = _libelleService.ParseFlexibleAmount(txn.Montant);
+            sens = amount >= 0 ? "C" : "D";
+            amount = Math.Abs(amount);
+        }
+
+        DateTime? opDate = DateTime.TryParse(txn.DateOp, out var d1) ? d1 : (DateTime?)null;
+        DateTime? valDate = DateTime.TryParse(txn.DateValeur, out var d2) ? d2 : opDate;
+
+        string cib1 = "  ";
+        string cib2 = "    ";
+
+        var normalizedLibelle = _libelleService.NormalizeKeyword(originalLibelle);
+        var detection = await _libelleService.DetectCategorieAsync(normalizedLibelle, amount, currentBankCode, cancellationToken);
+
+        if (detection != null && detection.IsDetected && !string.IsNullOrWhiteSpace(detection.Flux))
+        {
+            string cleanFluxCode = detection.Flux.Trim().ToUpperInvariant();
+
+            if (bankFluxConfig.TryGetValue(cleanFluxCode, out var fluxSetup))
+            {
+                cib1 = fluxSetup.Cib1 ?? "  ";
+                cib2 = fluxSetup.Cib2 ?? "    ";
+            }
+
+            var movementRow = new Afb120MovementRow
+            {
+                BankCode = cleanBank,
+                Guichet = cleanGuichet,
+                Rib2 = cleanRib,
+                OperationDate = opDate,
+                ValueDate = valDate,
+                Amount = amount,
+                Currency = cleanDeviseParam, // Utilisation de la devise reçue en paramètre
+                Sens = sens,
+                Label = originalLibelle.Length > 33 ? originalLibelle[..33] : originalLibelle,
+                Cib1 = cib1,
+                Cib2 = cib2,
+                DecimalsNumber = dynamicDecimals
+            };
+
+            movements.Add(movementRow);
+        }
+        else
+        {
+            if (!string.IsNullOrWhiteSpace(originalLibelle))
+            {
+                missingKeywords.Add(new MissingMappingItem
+                {
+                    OriginalLabel = originalLibelle,
+                    Amount = amount,
+                    BankCode = currentBankCode,
+                    Reason = "Aucun mapping flux trouvé pour ce libellé."
+                });
+            }
+        }
+    }
+
+    // ── 5. GÉNÉRATION DU FICHIER DE SORTIE AFB120 ───────────────────────────
+    if (missingKeywords.Any())
+    {
+        throw new MissingMappingsException(missingKeywords.OrderBy(k => k.OriginalLabel).ToList());
+    }
+
+    if (!movements.Any())
+        return new GenerateResultDto { Message = "Aucune transaction valide trouvée.", TotalMouvements = 0 };
+
+    movements = movements
+        .OrderBy(m => m.OperationDate ?? DateTime.MinValue)
+        .ThenBy(m => m.Label)
+        .ThenBy(m => m.Amount)
+        .ToList();
+
+    string finalOutputDir = string.IsNullOrWhiteSpace(outputPath) ? @"C:\BankFiles\AFB120\" : outputPath;
+    Directory.CreateDirectory(finalOutputDir);
+
+    var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+    var sb = new StringBuilder();
+    var first = movements.First();
+
+    // Ligne 01 : Ouverture du fichier AFB
+    string openSens = initialBalance >= 0 ? "C" : "D";
+    var line01 = BuildLine01(first.BankCode, first.Guichet, first.Rib2, first.Currency, first.DecimalsNumber, fileStartDate, Math.Abs(initialBalance), openSens);
+    AssertLength(line01, "01", cleanAccountParam);
+    sb.AppendLine(line01);
+
+    // Lignes 04 : Mouvements
+    var line04Count = 0;
+    foreach (var row in movements)
+    {
+        var line04 = BuildLine04(row);
+        AssertLength(line04, "04", row.Label);
+        sb.AppendLine(line04);
+        line04Count++;
+    }
+
+    // Calculs finaux et Ligne 07 : Clôture du fichier AFB
+    var totalCredit = movements.Where(r => r.Sens == "C").Sum(r => r.Amount);
+    var totalDebit = movements.Where(r => r.Sens == "D").Sum(r => r.Amount);
+    var closingBalance = initialBalance + totalCredit - totalDebit;
+    string closingSens = closingBalance >= 0 ? "C" : "D";
+
+    var line07 = BuildLine07(first.BankCode, first.Guichet, first.Rib2, first.Currency, first.DecimalsNumber, fileEndDate, Math.Abs(closingBalance), closingSens);
+    AssertLength(line07, "07", cleanAccountParam);
+    sb.AppendLine(line07);
+
+    var fileName = $"AFB120_{cleanAccountParam}_{timestamp}.txt";
+    var filePath = Path.Combine(finalOutputDir, fileName);
+    await File.WriteAllTextAsync(filePath, sb.ToString(), Encoding.UTF8);
+
+    var result = new GenerateResultDto
+    {
+        Message = $"Génération AFB120 réussie dans {finalOutputDir}",
+        NombreFichiers = 1,
+        TotalMouvements = line04Count
+    };
+    result.Fichiers.Add(filePath);
+    result.Detail.Add(new GenerateDetailDto
+    {
+        AccountId = cleanAccountParam,
+        Currency = first.Currency,
+        NbMouvements = line04Count,
+        TotalCredit = totalCredit,
+        TotalDebit = totalDebit,
+        SoldeOuverture = initialBalance,
+        SoldeFinal = closingBalance,
+        Fichier = fileName
+    });
+
+    return result;
+}
+
+private DataTable ConvertToDataTable(List<List<string>> rows)
+{
+    var dt = new DataTable();
+    if (rows == null || !rows.Any()) return dt;
+
+    int maxColumns = rows.Max(r => r.Count);
+    for (int i = 0; i < maxColumns; i++)
+    {
+        dt.Columns.Add($"Column_{i}", typeof(string));
+    }
+
+    foreach (var rowList in rows)
+    {
+        var dr = dt.NewRow();
+        for (int i = 0; i < rowList.Count; i++)
+        {
+            dr[i] = rowList[i];
+        }
+        dt.Rows.Add(dr);
+    }
+
+    return dt;
+}
+
 public async Task<GenerateResultDto> GenerateFromFileAsync3(IFormFile file, string? outputPath = null, CancellationToken cancellationToken = default)
 {
     if (file == null || file.Length == 0)
