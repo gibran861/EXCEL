@@ -147,108 +147,123 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
 /// <summary>
     /// Extrait les données brutes d'un fichier selon la configuration d'un modèle validé
     /// </summary>
-    public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate template)
+  public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate template)
+{
+    var statement = new ExtractedAccountStatement
     {
-        var statement = new ExtractedAccountStatement
+        BankName = template.BankName
+    };
+
+    // =========================================================================
+    // ÉTAPE 1 : Extraction des champs d'en-tête fixes (Période, Compte...)
+    // =========================================================================
+    foreach (var field in template.Fields.Where(f => f.IsHeaderField && f.FieldKey != "SOLDE_INIT"))
+    {
+        if (field.TargetRowIndex >= fileData.Rows.Count || field.TargetColumnIndex >= fileData.Columns.Count)
+            continue;
+
+        string rawValue = fileData.Rows[field.TargetRowIndex][field.TargetColumnIndex]?.ToString()?.Trim();
+
+        switch (field.FieldKey)
         {
-            BankName = template.BankName
-        };
-
-        // =========================================================================
-        // ÉTAPE 1 : Extraction des champs d'en-tête fixes (Scalaires)
-        // =========================================================================
-        foreach (var field in template.Fields.Where(f => f.IsHeaderField))
-        {
-            // Sécurité de positionnement
-            if (field.TargetRowIndex >= fileData.Rows.Count || field.TargetColumnIndex >= fileData.Columns.Count)
-                continue;
-
-            string rawValue = fileData.Rows[field.TargetRowIndex][field.TargetColumnIndex]?.ToString()?.Trim();
-
-            switch (field.FieldKey)
-            {
-                case "PERIODE":
-                    // Gestion du découpage dynamique (Ex: "01/05/2026 au 31/05/2026")
-                    if (!string.IsNullOrEmpty(rawValue) && rawValue.Contains(" au "))
-                    {
-                        var parts = rawValue.Split(new[] { " au " }, StringSplitOptions.None);
-                        // Nettoyage pour ne garder que la date s'il y a du texte résiduel (ex: "Période du 01/05...")
-                        statement.DateDebut = CleanRawDate(parts[0]);
-                        statement.DateFin = CleanRawDate(parts[1]);
-                    }
-                    else
-                    {
-                        // Si pas de séparateur " au ", on stocke la valeur brute
-                        statement.DateDebut = rawValue;
-                        statement.DateFin = rawValue;
-                    }
-                    break;
-
-                case "NUM_COMPTE":
-                    statement.NumCompte = rawValue;
-                    break;
-
-                case "SOLDE_INIT":
-                    statement.SoldeInitial = rawValue;
-                    break;
-                    
-                case "SOLDE_FIN":
-                    // Optionnel : si vous avez mappé un solde final
-                    break;
-            }
-        }
-
-        // =========================================================================
-        // ÉTAPE 2 : Extraction des lignes de transactions (Tableau itératif)
-        // =========================================================================
-        // On récupère les configurations des colonnes du tableau
-        var colDateConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_DATE");
-        var colLibelleConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_LIBELLE");
-        var colMontantConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_MONTANT");
-
-        // On démarre la lecture juste à la ligne en-dessous de l'en-tête du tableau des transactions
-        if (colMontantConfig != null)
-        {
-            int startRowIndex = colMontantConfig.TargetRowIndex + 1;
-
-            for (int i = startRowIndex; i < fileData.Rows.Count; i++)
-            {
-                // Lecture des cellules sur la ligne en cours selon l'index de colonne enregistré
-                string dateVal = colDateConfig != null ? fileData.Rows[i][colDateConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
-                string libelleVal = colLibelleConfig != null ? fileData.Rows[i][colLibelleConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
-                string montantVal = colMontantConfig != null ? fileData.Rows[i][colMontantConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
-
-                // Condition d'arrêt ou de saut : Si la ligne est totalement vide ou si le montant/libellé n'existe pas, on ignore
-                if (string.IsNullOrEmpty(libelleVal) && string.IsNullOrEmpty(montantVal))
+            case "DATE_DEBUT":
+            case "PERIODE":
+                if (!string.IsNullOrEmpty(rawValue) && rawValue.Contains(" au "))
                 {
-                    continue; 
+                    var parts = rawValue.Split(new[] { " au " }, StringSplitOptions.None);
+                    statement.DateDebut = CleanRawDate(parts[0]);
+                    statement.DateFin = CleanRawDate(parts[1]);
                 }
-
-                // Ajout de la transaction standardisée
-                statement.Transactions.Add(new TransactionLine
+                else
                 {
-                    DateOp = dateVal,
-                    Libelle = libelleVal,
-                    Montant = montantVal
-                });
-            }
+                    statement.DateDebut = rawValue;
+                }
+                break;
+
+            case "DATE_FIN":
+                if (string.IsNullOrEmpty(statement.DateFin))
+                {
+                    statement.DateFin = rawValue;
+                }
+                break;
+
+            case "NUM_COMPTE":
+                statement.NumCompte = rawValue;
+                break;
         }
-
-        return statement;
     }
 
-    /// <summary>
-    /// Méthode utilitaire pour extraire uniquement la date (JJ/MM/AAAA) si le libellé d'ancre a débordé dans la cible
-    /// </summary>
-    private string CleanRawDate(string rawInput)
+    // =========================================================================
+    // ÉTAPE 2 : Extraction Générique basée STRICTEMENT sur la structure du Modèle
+    // =========================================================================
+    var colDateConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_DATE");
+    var colLibelleConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_LIBELLE");
+    var colMontantConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_MONTANT");
+
+    if (colMontantConfig != null)
     {
-        if (string.IsNullOrEmpty(rawInput)) return string.Empty;
-        
-        // Supprime les termes comme "Période du", "Du", "le" pour isoler la valeur
-        string clean = rawInput.Replace("Période du", "", StringComparison.OrdinalIgnoreCase)
-                            .Replace("Du", "", StringComparison.OrdinalIgnoreCase)
-                            .Trim();
-        return clean;
+        // On commence la boucle juste après la ligne d'en-tête du tableau configurée
+        int startRowIndex = colMontantConfig.TargetRowIndex + 1;
+
+        for (int i = startRowIndex; i < fileData.Rows.Count; i++)
+        {
+            // Récupération dynamique selon les index de colonnes configurés en BDD
+            string dateVal = colDateConfig != null && colDateConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colDateConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
+            string libelleVal = colLibelleConfig != null && colLibelleConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colLibelleConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
+            string montantVal = colMontantConfig != null && colMontantConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colMontantConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
+
+            // --- CRITÈRE 1 : Interception dynamique du Solde Initial ---
+            if (!string.IsNullOrEmpty(libelleVal) && libelleVal.Contains("Solde initial", StringComparison.OrdinalIgnoreCase))
+            {
+                var match = System.Text.RegularExpressions.Regex.Match(libelleVal, @"-?\d+");
+                statement.SoldeInitial = match.Success ? match.Value : string.Empty;
+                continue; // Ligne traitée, on passe à la suivante
+            }
+
+            // --- CRITÈRE 2 : Vérification de la présence de la structure minimale exigée ---
+            // Si l'un des trois piliers obligatoires de la transaction (Date, Libellé) est complètement vide,
+            // ce n'est pas une ligne de transaction conforme au modèle (ex: lignes de commentaires sous-jacentes).
+            if (string.IsNullOrEmpty(dateVal) || string.IsNullOrEmpty(libelleVal))
+            {
+                continue;
+            }
+
+            // --- CRITÈRE 3 : Élimination de la répétition des en-têtes ---
+            // Si la valeur lue est identique au libellé de l'ancre (ex: le mot "Date" ou le mot "Libellé"), on l'ignore.
+            if ((colDateConfig != null && dateVal.Equals(colDateConfig.AnchorTextValue, StringComparison.OrdinalIgnoreCase)) ||
+                (colLibelleConfig != null && libelleVal.Equals(colLibelleConfig.AnchorTextValue, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            // --- CRITÈRE 4 : Élimination des lignes de fin de fichier (Totaux / Synthèses) ---
+            // Si le montant ou le libellé correspond à un résumé qui casse la structure d'une transaction,
+            // (Par exemple une ligne "Total" n'a pas de date valide, ou si l'IHM a configuré un montant mais qu'ici c'est du texte)
+            // Pour valider la structure complète, on s'assure juste que la ligne ne réécrira pas des mots d'ancres connus.
+            if (libelleVal.Contains("Total", StringComparison.OrdinalIgnoreCase) || libelleVal.Contains("Solde", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            // Si la ligne possède bien des données dans les colonnes configurées par le modèle, elle est ajoutée
+            statement.Transactions.Add(new TransactionLine
+            {
+                DateOp = dateVal,
+                Libelle = libelleVal,
+                Montant = montantVal
+            });
+        }
     }
+
+    return statement;
+}
+
+private string CleanRawDate(string rawInput)
+{
+    if (string.IsNullOrEmpty(rawInput)) return string.Empty;
+    return rawInput.Replace("Période du", "", StringComparison.OrdinalIgnoreCase)
+                    .Replace("Du", "", StringComparison.OrdinalIgnoreCase)
+                    .Trim();
+}
 }
 }

@@ -14,6 +14,7 @@ public class ExtractedAccountStatement
 public class TransactionLine
 {
     public string DateOp { get; set; }
+    public string DateVal { get; set; }
     public string Libelle { get; set; }
     public string Montant { get; set; }
 }
