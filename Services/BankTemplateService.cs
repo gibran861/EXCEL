@@ -167,6 +167,18 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
         BankName = template.BankName
     };
 
+    // Configurations des colonnes de transactions (Utile pour comparer les index à l'Étape 1)
+    var colDateConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_DATE");
+    var colLibelleConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_LIBELLE");
+    var colDateValConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_DATE_VALEUR");
+    
+    var colMontantConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_MONTANT");
+    var colDebitConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_DEBIT");
+    var colCreditConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_CREDIT");
+    var colSensConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_SENS");
+
+    bool mustCalculateDates = false;
+
     // =========================================================================
     // ÉTAPE 1 : Extraction des champs d'en-tête fixes
     // =========================================================================
@@ -174,6 +186,15 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
     {
         if (field.TargetRowIndex >= fileData.Rows.Count || field.TargetColumnIndex >= fileData.Columns.Count)
             continue;
+
+        // CONDITION : Si la date de début ou fin est configurée sur la même colonne que TX_DATE,
+        // on l'ignore ici à l'Étape 1 et on active le calcul dynamique pour plus tard.
+        if ((field.FieldKey == "DATE_DEBUT" || field.FieldKey == "DATE_FIN" || field.FieldKey == "PERIODE") 
+            && colDateConfig != null && field.TargetColumnIndex == colDateConfig.TargetColumnIndex)
+        {
+            mustCalculateDates = true;
+            continue; 
+        }
 
         string rawValue = fileData.Rows[field.TargetRowIndex][field.TargetColumnIndex]?.ToString()?.Trim();
 
@@ -207,7 +228,6 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
             case "SOLDE_INIT":
                 if (!string.IsNullOrEmpty(rawValue))
                 {
-                    // Extrait le premier bloc numérique trouvé (gère les nombres négatifs avec le signe "-")
                     var match = System.Text.RegularExpressions.Regex.Match(rawValue.Replace(" ", ""), @"-?\d+");
                     statement.SoldeInitial = match.Success ? match.Value : rawValue;
                 }
@@ -216,8 +236,7 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
     }
 
     // =========================================================================
-    // SÉCURITÉ / FALLBACK : Si le Solde Initial est toujours vide ou introuvable via l'index fixe,
-    // on scanne le fichier entier à la recherche d'une ligne textuelle "Solde initial"
+    // SÉCURITÉ / FALLBACK : Recherche textuelle globale du Solde Initial
     // =========================================================================
     if (string.IsNullOrEmpty(statement.SoldeInitial))
     {
@@ -230,8 +249,6 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
                 
                 if (!string.IsNullOrEmpty(cellText) && cellText.Contains("Solde initial", StringComparison.OrdinalIgnoreCase))
                 {
-                    // Analyse de la chaîne (ex: "Solde initial (XOF) : -34921450")
-                    // On extrait le nombre incluant un éventuel signe négatif
                     var match = System.Text.RegularExpressions.Regex.Match(cellText.Replace(" ", ""), @"-?\d+");
                     if (match.Success)
                     {
@@ -246,17 +263,8 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
     }
 
     // =========================================================================
-    // ÉTAPE 2 : Chargement dynamique des configurations de colonnes
+    // ÉTAPE 2 : Extraction et normalisation des transactions
     // =========================================================================
-    var colDateConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_DATE");
-    var colLibelleConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_LIBELLE");
-    var colDateValConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_DATE_VALEUR");
-    
-    var colMontantConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_MONTANT");
-    var colDebitConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_DEBIT");
-    var colCreditConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_CREDIT");
-    var colSensConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_SENS");
-
     var anyTableField = template.Fields.FirstOrDefault(f => !f.IsHeaderField);
     if (anyTableField != null)
     {
@@ -278,7 +286,6 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
                 continue;
             }
 
-            // Élimination de la ligne si elle contient le texte global du solde initial (évite les doublons dans les transactions)
             if (!string.IsNullOrEmpty(libelleVal) && libelleVal.Contains("Solde initial", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
@@ -296,37 +303,29 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
             }
 
             // =========================================================================
-            // ÉTAPE 3 : ALGORITHME DE NORMALISATION DU MONTANT (CORRIGÉ & BLINDÉ)
+            // ÉTAPE 3 : ALGORITHME DE NORMALISATION DU MONTANT
             // =========================================================================
             string finalDebit = "";
             string finalCredit = "";
 
-            // Fonction utilitaire locale pour nettoyer et standardiser les chaînes de montants
             string CleanAmountStr(string val)
             {
                 if (string.IsNullOrEmpty(val)) return "";
-                string cleaned = val.Replace(" ", "").Replace("\u00A0", "").Trim(); // Supprime espaces et espaces insécables
+                string cleaned = val.Replace(" ", "").Replace("\u00A0", "").Trim(); 
                 if (cleaned == "-" || cleaned == "0" || cleaned == "0,00" || cleaned == "0.00") return "";
                 return cleaned;
             }
 
-            // Nettoyage préalable des variables reçues du DataTable
             debitVal = CleanAmountStr(debitVal);
             creditVal = CleanAmountStr(creditVal);
             montantVal = CleanAmountStr(montantVal);
             string cleanSens = string.IsNullOrEmpty(sensVal) ? "" : sensVal.Trim().ToUpper();
 
-            // -------------------------------------------------------------------------
-            // SCÉNARIO 1 : Deux colonnes distinctes Débit et Crédit
-            // -------------------------------------------------------------------------
             if (colDebitConfig != null && colCreditConfig != null)
             {
                 finalDebit = debitVal;
                 finalCredit = creditVal;
             }
-            // -------------------------------------------------------------------------
-            // SCÉNARIO 2 : Une seule colonne Montant + Une colonne de Sens (C, D, DR, CR, Débit...)
-            // -------------------------------------------------------------------------
             else if (colMontantConfig != null && colSensConfig != null && !string.IsNullOrEmpty(cleanSens))
             {
                 if (cleanSens.StartsWith("D") || cleanSens.Contains("DEBIT") || cleanSens.Contains("DÉBIT"))
@@ -338,20 +337,13 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
                     finalCredit = montantVal;
                 }
             }
-            // -------------------------------------------------------------------------
-            // SCÉNARIO 3 : Une seule colonne Montant Signé (Négatif = Débit, Positif = Crédit)
-            // -------------------------------------------------------------------------
             else if (colMontantConfig != null && !string.IsNullOrEmpty(montantVal))
             {
-                // Remplacement temporaire de la virgule par un point pour l'analyse au format US/Standard
                 string parsingTarget = montantVal.Replace(",", ".");
-
-                // Gestion du cas où le signe moins est à la fin (ex: "1500.00-") ou s'il y a des parenthèses "(1500)"
                 bool isNegative = parsingTarget.StartsWith("-") || 
                                  parsingTarget.EndsWith("-") || 
                                  (parsingTarget.StartsWith("(") && parsingTarget.EndsWith(")"));
 
-                // Nettoyer les caractères de signe pour ne garder que la valeur absolue
                 string absoluteAmount = montantVal.Replace("-", "").Replace("(", "").Replace(")", "").Trim();
 
                 if (isNegative)
@@ -379,39 +371,60 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
     }
 
     // =========================================================================
-    // ÉTAPE 4 : Application de la formule sur le Solde Initial (Si REVERSE_FIRST_TX)
+    // ÉTAPE 4 : Application de la formule sur le Solde Initial
     // =========================================================================
     var soldeInitConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "SOLDE_INIT");
-    
     if (soldeInitConfig != null && !string.IsNullOrEmpty(statement.SoldeInitial) && statement.Transactions.Any())
     {
-        // Extraction sécurisée de la propriété de calcul de votre BDD (valeur par défaut : "DIRECT")
         string calculationMethod = soldeInitConfig.CalculationMethod ?? "DIRECT"; 
 
         if (calculationMethod.Equals("REVERSE_FIRST_TX", StringComparison.OrdinalIgnoreCase))
         {
-            // 1. Conversion sécurisée du solde extrait en format décimal
             string formattedSolde = statement.SoldeInitial.Replace(",", ".");
             if (decimal.TryParse(formattedSolde, System.Globalization.CultureInfo.InvariantCulture, out decimal soldeLu))
             {
-                // 2. Récupération de la première transaction exécutée
                 var firstTx = statement.Transactions.First();
-                
                 decimal.TryParse(firstTx.Debit?.Replace(",", "."), System.Globalization.CultureInfo.InvariantCulture, out decimal firstDebit);
                 decimal.TryParse(firstTx.Credit?.Replace(",", "."), System.Globalization.CultureInfo.InvariantCulture, out decimal firstCredit);
 
-                // 3. Calcul de l'opération inverse pour obtenir le solde de départ
-                // (Solde Initial = Solde après transaction + Débit - Crédit)
                 decimal vraiSoldeInitial = soldeLu + firstDebit - firstCredit;
-
-                // 4. Ré-affectation au format chaîne standardisé
                 statement.SoldeInitial = vraiSoldeInitial.ToString("F0", System.Globalization.CultureInfo.InvariantCulture);
             }
         }
     }
 
+    // =========================================================================
+    // ÉTAPE 5 : CALCUL DE LA PÉRIODE DÈS QUE DATE_DEBUT/FIN == TX_DATE
+    // =========================================================================
+    if (mustCalculateDates && statement.Transactions.Any())
+    {
+        var validDates = new List<DateTime>();
+
+        foreach (var tx in statement.Transactions)
+        {
+            if (!string.IsNullOrEmpty(tx.DateOp))
+            {
+                if (DateTime.TryParse(tx.DateOp, out DateTime parsedDate))
+                {
+                    validDates.Add(parsedDate);
+                }
+            }
+        }
+
+        if (validDates.Any())
+        {
+            DateTime minDate = validDates.Min();
+            DateTime maxDate = validDates.Max();
+
+            // Formatage standardisé des dates calculées (Modifiable selon vos besoins)
+            statement.DateDebut = minDate.ToString("yyyy-MM-dd");
+            statement.DateFin = maxDate.ToString("yyyy-MM-dd");
+        }
+    }
+
     return statement;
-}private string CleanRawDate(string rawInput)
+}
+private string CleanRawDate(string rawInput)
 {
     if (string.IsNullOrEmpty(rawInput)) return string.Empty;
     return rawInput.Replace("Période du", "", StringComparison.OrdinalIgnoreCase)
