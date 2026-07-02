@@ -60,8 +60,6 @@ public class BankTemplateService
             .Include(t => t.Fields)
             .FirstOrDefaultAsync(t => t.Id == id);
     }
-
-
 public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
 {
     // 1. Récupérer tous les modèles de la BDD
@@ -69,12 +67,19 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
         .Include(t => t.Fields)
         .ToListAsync();
 
+    // Fonction locale pour normaliser et nettoyer le texte pour la comparaison (ignore \r, \n et espaces multiples)
+    string CleanText(string input)
+    {
+        if (string.IsNullOrEmpty(input)) return string.Empty;
+        string cleaned = input.Replace("\r", "").Replace("\n", " ").Replace("\t", " ");
+        return System.Text.RegularExpressions.Regex.Replace(cleaned, @"\s+", " ").Trim().ToLower();
+    }
+
     foreach (var template in allTemplates)
     {
         bool isModelMatch = true;
         int headerFieldsCount = 0;
         
-        // Variables pour mémoriser le décalage dynamique trouvé sur ce fichier
         int detectedRowOffset = 0; 
         bool offsetCalculated = false;
 
@@ -86,35 +91,42 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
             headerFieldsCount++;
             bool anchorFoundInFile = false;
 
-            // Au lieu de viser une cellule fixe (1,1), on cherche l'ancre dans les 50 premières lignes
-            // et les 5 premières colonnes du fichier pour absorber les décalages !
+            string cleanedAnchorText = CleanText(field.AnchorTextValue);
+            if (string.IsNullOrEmpty(cleanedAnchorText)) continue;
+
+            // CORRECTIF 1 : Augmenter maxCols à 10 au lieu de 5 pour inclure le Crédit (index 5) et le Solde (index 6)
             int maxRows = Math.Min(fileData.Rows.Count, 50);
-            int maxCols = Math.Min(fileData.Columns.Count, 5);
+            int maxCols = Math.Min(fileData.Columns.Count, 10);
 
             for (int r = 0; r < maxRows; r++)
             {
                 for (int c = 0; c < maxCols; c++)
                 {
-                    string cellValue = fileData.Rows[r][c]?.ToString()?.Trim();
+                    string cleanedCellValue = CleanText(fileData.Rows[r][c]?.ToString());
 
-                    if (!string.IsNullOrEmpty(cellValue) && 
-                        cellValue.Contains(field.AnchorTextValue.Trim(), StringComparison.OrdinalIgnoreCase))
+                    if (!string.IsNullOrEmpty(cleanedCellValue) && 
+                        cleanedCellValue.Contains(cleanedAnchorText, StringComparison.OrdinalIgnoreCase))
                     {
-                        // L'ancre a été localisée !
+                        // CORRECTIF 2 : Si le texte est générique comme "Mouvement" ou "Solde", 
+                        // on s'assure qu'on est au moins proche de la colonne initialement prévue en BDD
+                        // pour éviter que le Crédit ne vienne écraser/voler l'index du Débit.
+                        if ((cleanedAnchorText == "mouvement" || cleanedAnchorText == "solde") && Math.Abs(c - field.AnchorColumnIndex) > 1)
+                        {
+                            continue; // Ce n'est probablement pas la bonne colonne pour cette ancre spécifique
+                        }
+
                         anchorFoundInFile = true;
 
-                        // Si c'est la première ancre trouvée, on calcule l'écart de lignes par rapport à la BDD
                         if (!offsetCalculated)
                         {
                             detectedRowOffset = r - field.AnchorRowIndex;
                             offsetCalculated = true;
                         }
 
-                        // On réajuste à la volée les coordonnées cibles pour l'extraction des données
+                        // Réajustement des coordonnées
                         field.AnchorRowIndex = r;
-                        field.AnchorColumnIndex = c; // Si l'IHM s'est trompée de colonne, on corrige
+                        field.AnchorColumnIndex = c; 
                         
-                        // Décalage de la cible de la valeur (ex: si la valeur était initialement sur la même ligne)
                         field.TargetRowIndex = field.TargetRowIndex + detectedRowOffset;
                         break;
                     }
@@ -122,7 +134,6 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
                 if (anchorFoundInFile) break;
             }
 
-            // Si une seule ancre essentielle (ex: "Période du") n'est pas trouvée, ce modèle est rejeté
             if (!anchorFoundInFile)
             {
                 isModelMatch = false;
@@ -130,7 +141,6 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
             }
         }
 
-        // Si toutes nos ancres ont matché avec succès, on applique l'ajustement aux lignes du tableau
         if (headerFieldsCount > 0 && isModelMatch)
         {
             foreach (var tableField in template.Fields.Where(f => !f.IsHeaderField))
@@ -138,15 +148,18 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
                 tableField.TargetRowIndex = tableField.TargetRowIndex + detectedRowOffset;
             }
 
-            return template; // Modèle validé !
+            return template; 
         }
     }
 
-    return null; // Aucun modèle correspondant trouvé
+    return null; 
 }
+
+
 /// <summary>
     /// Extrait les données brutes d'un fichier selon la configuration d'un modèle validé
     /// </summary>
+
 public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate template)
 {
     var statement = new ExtractedAccountStatement
@@ -155,9 +168,9 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
     };
 
     // =========================================================================
-    // ÉTAPE 1 : Extraction des champs d'en-tête fixes (Période, Compte...)
+    // ÉTAPE 1 : Extraction des champs d'en-tête fixes
     // =========================================================================
-    foreach (var field in template.Fields.Where(f => f.IsHeaderField && f.FieldKey != "SOLDE_INIT"))
+    foreach (var field in template.Fields.Where(f => f.IsHeaderField))
     {
         if (field.TargetRowIndex >= fileData.Rows.Count || field.TargetColumnIndex >= fileData.Columns.Count)
             continue;
@@ -190,6 +203,45 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
             case "NUM_COMPTE":
                 statement.NumCompte = rawValue;
                 break;
+
+            case "SOLDE_INIT":
+                if (!string.IsNullOrEmpty(rawValue))
+                {
+                    // Extrait le premier bloc numérique trouvé (gère les nombres négatifs avec le signe "-")
+                    var match = System.Text.RegularExpressions.Regex.Match(rawValue.Replace(" ", ""), @"-?\d+");
+                    statement.SoldeInitial = match.Success ? match.Value : rawValue;
+                }
+                break;
+        }
+    }
+
+    // =========================================================================
+    // SÉCURITÉ / FALLBACK : Si le Solde Initial est toujours vide ou introuvable via l'index fixe,
+    // on scanne le fichier entier à la recherche d'une ligne textuelle "Solde initial"
+    // =========================================================================
+    if (string.IsNullOrEmpty(statement.SoldeInitial))
+    {
+        bool soldeFound = false;
+        for (int r = 0; r < fileData.Rows.Count; r++)
+        {
+            for (int c = 0; c < fileData.Columns.Count; c++)
+            {
+                string cellText = fileData.Rows[r][c]?.ToString()?.Trim();
+                
+                if (!string.IsNullOrEmpty(cellText) && cellText.Contains("Solde initial", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Analyse de la chaîne (ex: "Solde initial (XOF) : -34921450")
+                    // On extrait le nombre incluant un éventuel signe négatif
+                    var match = System.Text.RegularExpressions.Regex.Match(cellText.Replace(" ", ""), @"-?\d+");
+                    if (match.Success)
+                    {
+                        statement.SoldeInitial = match.Value;
+                        soldeFound = true;
+                        break;
+                    }
+                }
+            }
+            if (soldeFound) break;
         }
     }
 
@@ -200,13 +252,11 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
     var colLibelleConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_LIBELLE");
     var colDateValConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_DATE_VALEUR");
     
-    // Les différentes configurations possibles pour le montant
     var colMontantConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_MONTANT");
     var colDebitConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_DEBIT");
     var colCreditConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_CREDIT");
-    var colSensConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_SENS"); // Nouvelle clé possible en BDD
+    var colSensConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_SENS");
 
-    // Recherche de la ligne de départ (on prend le premier champ de tableau configuré disponible)
     var anyTableField = template.Fields.FirstOrDefault(f => !f.IsHeaderField);
     if (anyTableField != null)
     {
@@ -214,7 +264,6 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
 
         for (int i = startRowIndex; i < fileData.Rows.Count; i++)
         {
-            // Récupération sécurisée des valeurs brutes de la ligne
             string dateVal = colDateConfig != null && colDateConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colDateConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
             string libelleVal = colLibelleConfig != null && colLibelleConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colLibelleConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
             string dateValeurVal = colDateValConfig != null && colDateValConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colDateValConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
@@ -224,71 +273,99 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
             string creditVal = colCreditConfig != null && colCreditConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colCreditConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
             string sensVal = colSensConfig != null && colSensConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colSensConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
 
-            // --- CRITÈRE 1 : Interception du Solde Initial ---
+            if (string.IsNullOrEmpty(dateVal) && string.IsNullOrEmpty(libelleVal))
+            {
+                continue;
+            }
+
+            // Élimination de la ligne si elle contient le texte global du solde initial (évite les doublons dans les transactions)
             if (!string.IsNullOrEmpty(libelleVal) && libelleVal.Contains("Solde initial", StringComparison.OrdinalIgnoreCase))
             {
-                var match = System.Text.RegularExpressions.Regex.Match(libelleVal, @"-?\d+");
-                statement.SoldeInitial = match.Success ? match.Value : string.Empty;
                 continue;
             }
 
-            // --- CRITÈRE 2 : Vérification de la structure minimale ---
-            if (string.IsNullOrEmpty(dateVal) || string.IsNullOrEmpty(libelleVal))
-            {
-                continue;
-            }
-
-            // --- CRITÈRE 3 : Élimination des en-têtes répétés ---
             if ((colDateConfig != null && dateVal.Equals(colDateConfig.AnchorTextValue, StringComparison.OrdinalIgnoreCase)) ||
                 (colLibelleConfig != null && libelleVal.Equals(colLibelleConfig.AnchorTextValue, StringComparison.OrdinalIgnoreCase)))
             {
                 continue;
             }
 
-            // --- CRITÈRE 4 : Élimination des lignes de fin de fichier ---
-            if (libelleVal.Contains("Total", StringComparison.OrdinalIgnoreCase) || libelleVal.Contains("Solde", StringComparison.OrdinalIgnoreCase))
+            if (!string.IsNullOrEmpty(libelleVal) && (libelleVal.Contains("Total", StringComparison.OrdinalIgnoreCase) || libelleVal.Contains("Solde", StringComparison.OrdinalIgnoreCase)))
             {
                 continue;
             }
 
-            // =========================================================================
-            // ÉTAPE 3 : ALGORITHME DE NORMALISATION DU MONTANT (GÉNÉRIQUE)
-            // =========================================================================
-            string finalDebit = "";
-            string finalCredit = "";
+         // =========================================================================
+// ÉTAPE 3 : ALGORITHME DE NORMALISATION DU MONTANT (CORRIGÉ & BLINDÉ)
+// =========================================================================
+string finalDebit = "";
+string finalCredit = "";
 
-            // CAS A : Colonnes Débit et Crédit séparées (ex: votre configuration actuelle)
-            if (colDebitConfig != null || colCreditConfig != null)
-            {
-                finalDebit = debitVal;
-                finalCredit = creditVal;
-            }
-            // CAS B : Une seule colonne Montant + une colonne de Sens (C, D, CR, DR...)
-            else if (colMontantConfig != null && colSensConfig != null && !string.IsNullOrEmpty(sensVal))
-            {
-                if (sensVal.StartsWith("D", StringComparison.OrdinalIgnoreCase) || sensVal.Equals("DR", StringComparison.OrdinalIgnoreCase))
-                    finalDebit = montantVal;
-                else if (sensVal.StartsWith("C", StringComparison.OrdinalIgnoreCase) || sensVal.Equals("CR", StringComparison.OrdinalIgnoreCase))
-                    finalCredit = montantVal;
-            }
-            // CAS C : Une seule colonne Montant signée (ex: négatif = débit, positif = crédit)
-            else if (colMontantConfig != null && !string.IsNullOrEmpty(montantVal))
-            {
-                // Nettoyage rapide pour tester le signe mathématique
-                string cleanMontant = montantVal.Replace(" ", "").Replace(",", ".");
-                if (cleanMontant.StartsWith("-"))
-                {
-                    finalDebit = montantVal.Replace("-", "").Trim(); // On retire le moins pour l'AFB si nécessaire
-                    finalCredit = "";
-                }
-                else
-                {
-                    finalDebit = "";
-                    finalCredit = montantVal;
-                }
-            }
+// Fonction utilitaire locale pour nettoyer et standardiser les chaînes de montants
+string CleanAmountStr(string val)
+{
+    if (string.IsNullOrEmpty(val)) return "";
+    string cleaned = val.Replace(" ", "").Replace("\u00A0", "").Trim(); // Supprime espaces et espaces insécables
+    if (cleaned == "-" || cleaned == "0" || cleaned == "0,00" || cleaned == "0.00") return "";
+    return cleaned;
+}
 
-            // Ajout de la ligne avec ses montants parfaitement dispatchés
+// Nettoyage préalable des variables reçues du DataTable
+debitVal = CleanAmountStr(debitVal);
+creditVal = CleanAmountStr(creditVal);
+montantVal = CleanAmountStr(montantVal);
+string cleanSens = string.IsNullOrEmpty(sensVal) ? "" : sensVal.Trim().ToUpper();
+
+// -------------------------------------------------------------------------
+// SCÉNARIO 1 : Deux colonnes distinctes Débit et Crédit
+// -------------------------------------------------------------------------
+if (colDebitConfig != null && colCreditConfig != null)
+{
+    finalDebit = debitVal;
+    finalCredit = creditVal;
+}
+// -------------------------------------------------------------------------
+// SCÉNARIO 2 : Une seule colonne Montant + Une colonne de Sens (C, D, DR, CR, Débit...)
+// -------------------------------------------------------------------------
+else if (colMontantConfig != null && colSensConfig != null && !string.IsNullOrEmpty(cleanSens))
+{
+    if (cleanSens.StartsWith("D") || cleanSens.Contains("DEBIT") || cleanSens.Contains("DÉBIT"))
+    {
+        finalDebit = montantVal;
+    }
+    else if (cleanSens.StartsWith("C") || cleanSens.Contains("CREDIT") || cleanSens.Contains("CRÉDIT"))
+    {
+        finalCredit = montantVal;
+    }
+}
+// -------------------------------------------------------------------------
+// SCÉNARIO 3 : Une seule colonne Montant Signé (Négatif = Débit, Positif = Crédit)
+// -------------------------------------------------------------------------
+else if (colMontantConfig != null && !string.IsNullOrEmpty(montantVal))
+{
+    // Remplacement temporaire de la virgule par un point pour l'analyse au format US/Standard
+    string parsingTarget = montantVal.Replace(",", ".");
+
+    // Gestion du cas où le signe moins est à la fin (ex: "1500.00-") ou s'il y a des parenthèses "(1500)"
+    bool isNegative = parsingTarget.StartsWith("-") || 
+                     parsingTarget.EndsWith("-") || 
+                     (parsingTarget.StartsWith("(") && parsingTarget.EndsWith(")"));
+
+    // Nettoyer les caractères de signe pour ne garder que la valeur absolue
+    string absoluteAmount = montantVal.Replace("-", "").Replace("(", "").Replace(")", "").Trim();
+
+    if (isNegative)
+    {
+        finalDebit = absoluteAmount;
+        finalCredit = "";
+    }
+    else
+    {
+        finalDebit = "";
+        finalCredit = absoluteAmount;
+    }
+}
+
             statement.Transactions.Add(new TransactionLine
             {
                 DateOp = dateVal,
@@ -296,20 +373,30 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
                 Libelle = libelleVal,
                 Debit = finalDebit,
                 Credit = finalCredit,
-                Montant = montantVal // Conserve la valeur brute d'origine au cas où
+                Montant = montantVal
             });
         }
     }
 
     return statement;
-}
-
+} 
 private string CleanRawDate(string rawInput)
 {
     if (string.IsNullOrEmpty(rawInput)) return string.Empty;
     return rawInput.Replace("Période du", "", StringComparison.OrdinalIgnoreCase)
                     .Replace("Du", "", StringComparison.OrdinalIgnoreCase)
                     .Trim();
+}
+
+private string CleanTextForComparison(string input)
+{
+    if (string.IsNullOrEmpty(input)) return string.Empty;
+    
+    // Enlever les retours à la ligne, retours chariot et tabulations
+    string cleaned = input.Replace("\r", "").Replace("\n", " ").Replace("\t", " ");
+    
+    // Remplacer les espaces multiples par un seul espace et nettoyer les bords
+    return System.Text.RegularExpressions.Regex.Replace(cleaned, @"\s+", " ").Trim().ToLower();
 }
 }
 }
