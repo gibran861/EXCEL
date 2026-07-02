@@ -19,7 +19,7 @@ public class TemplateField
     // Clé unique du champ requis pour l'AFB (ex: "PERIODE", "NUM_COMPTE", "TX_MONTANT")
     public string FieldKey { get; set; }
     public string FieldLabel { get; set; }
-    
+    public string CalculationMethod { get; set; } = "DIRECT";
     // Coordonnées de la cellule d'ANCRE (le texte de repère)
     public int AnchorRowIndex { get; set; }
     public int AnchorColumnIndex { get; set; }

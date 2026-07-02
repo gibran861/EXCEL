@@ -295,76 +295,76 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
                 continue;
             }
 
-         // =========================================================================
-// ÉTAPE 3 : ALGORITHME DE NORMALISATION DU MONTANT (CORRIGÉ & BLINDÉ)
-// =========================================================================
-string finalDebit = "";
-string finalCredit = "";
+            // =========================================================================
+            // ÉTAPE 3 : ALGORITHME DE NORMALISATION DU MONTANT (CORRIGÉ & BLINDÉ)
+            // =========================================================================
+            string finalDebit = "";
+            string finalCredit = "";
 
-// Fonction utilitaire locale pour nettoyer et standardiser les chaînes de montants
-string CleanAmountStr(string val)
-{
-    if (string.IsNullOrEmpty(val)) return "";
-    string cleaned = val.Replace(" ", "").Replace("\u00A0", "").Trim(); // Supprime espaces et espaces insécables
-    if (cleaned == "-" || cleaned == "0" || cleaned == "0,00" || cleaned == "0.00") return "";
-    return cleaned;
-}
+            // Fonction utilitaire locale pour nettoyer et standardiser les chaînes de montants
+            string CleanAmountStr(string val)
+            {
+                if (string.IsNullOrEmpty(val)) return "";
+                string cleaned = val.Replace(" ", "").Replace("\u00A0", "").Trim(); // Supprime espaces et espaces insécables
+                if (cleaned == "-" || cleaned == "0" || cleaned == "0,00" || cleaned == "0.00") return "";
+                return cleaned;
+            }
 
-// Nettoyage préalable des variables reçues du DataTable
-debitVal = CleanAmountStr(debitVal);
-creditVal = CleanAmountStr(creditVal);
-montantVal = CleanAmountStr(montantVal);
-string cleanSens = string.IsNullOrEmpty(sensVal) ? "" : sensVal.Trim().ToUpper();
+            // Nettoyage préalable des variables reçues du DataTable
+            debitVal = CleanAmountStr(debitVal);
+            creditVal = CleanAmountStr(creditVal);
+            montantVal = CleanAmountStr(montantVal);
+            string cleanSens = string.IsNullOrEmpty(sensVal) ? "" : sensVal.Trim().ToUpper();
 
-// -------------------------------------------------------------------------
-// SCÉNARIO 1 : Deux colonnes distinctes Débit et Crédit
-// -------------------------------------------------------------------------
-if (colDebitConfig != null && colCreditConfig != null)
-{
-    finalDebit = debitVal;
-    finalCredit = creditVal;
-}
-// -------------------------------------------------------------------------
-// SCÉNARIO 2 : Une seule colonne Montant + Une colonne de Sens (C, D, DR, CR, Débit...)
-// -------------------------------------------------------------------------
-else if (colMontantConfig != null && colSensConfig != null && !string.IsNullOrEmpty(cleanSens))
-{
-    if (cleanSens.StartsWith("D") || cleanSens.Contains("DEBIT") || cleanSens.Contains("DÉBIT"))
-    {
-        finalDebit = montantVal;
-    }
-    else if (cleanSens.StartsWith("C") || cleanSens.Contains("CREDIT") || cleanSens.Contains("CRÉDIT"))
-    {
-        finalCredit = montantVal;
-    }
-}
-// -------------------------------------------------------------------------
-// SCÉNARIO 3 : Une seule colonne Montant Signé (Négatif = Débit, Positif = Crédit)
-// -------------------------------------------------------------------------
-else if (colMontantConfig != null && !string.IsNullOrEmpty(montantVal))
-{
-    // Remplacement temporaire de la virgule par un point pour l'analyse au format US/Standard
-    string parsingTarget = montantVal.Replace(",", ".");
+            // -------------------------------------------------------------------------
+            // SCÉNARIO 1 : Deux colonnes distinctes Débit et Crédit
+            // -------------------------------------------------------------------------
+            if (colDebitConfig != null && colCreditConfig != null)
+            {
+                finalDebit = debitVal;
+                finalCredit = creditVal;
+            }
+            // -------------------------------------------------------------------------
+            // SCÉNARIO 2 : Une seule colonne Montant + Une colonne de Sens (C, D, DR, CR, Débit...)
+            // -------------------------------------------------------------------------
+            else if (colMontantConfig != null && colSensConfig != null && !string.IsNullOrEmpty(cleanSens))
+            {
+                if (cleanSens.StartsWith("D") || cleanSens.Contains("DEBIT") || cleanSens.Contains("DÉBIT"))
+                {
+                    finalDebit = montantVal;
+                }
+                else if (cleanSens.StartsWith("C") || cleanSens.Contains("CREDIT") || cleanSens.Contains("CRÉDIT"))
+                {
+                    finalCredit = montantVal;
+                }
+            }
+            // -------------------------------------------------------------------------
+            // SCÉNARIO 3 : Une seule colonne Montant Signé (Négatif = Débit, Positif = Crédit)
+            // -------------------------------------------------------------------------
+            else if (colMontantConfig != null && !string.IsNullOrEmpty(montantVal))
+            {
+                // Remplacement temporaire de la virgule par un point pour l'analyse au format US/Standard
+                string parsingTarget = montantVal.Replace(",", ".");
 
-    // Gestion du cas où le signe moins est à la fin (ex: "1500.00-") ou s'il y a des parenthèses "(1500)"
-    bool isNegative = parsingTarget.StartsWith("-") || 
-                     parsingTarget.EndsWith("-") || 
-                     (parsingTarget.StartsWith("(") && parsingTarget.EndsWith(")"));
+                // Gestion du cas où le signe moins est à la fin (ex: "1500.00-") ou s'il y a des parenthèses "(1500)"
+                bool isNegative = parsingTarget.StartsWith("-") || 
+                                 parsingTarget.EndsWith("-") || 
+                                 (parsingTarget.StartsWith("(") && parsingTarget.EndsWith(")"));
 
-    // Nettoyer les caractères de signe pour ne garder que la valeur absolue
-    string absoluteAmount = montantVal.Replace("-", "").Replace("(", "").Replace(")", "").Trim();
+                // Nettoyer les caractères de signe pour ne garder que la valeur absolue
+                string absoluteAmount = montantVal.Replace("-", "").Replace("(", "").Replace(")", "").Trim();
 
-    if (isNegative)
-    {
-        finalDebit = absoluteAmount;
-        finalCredit = "";
-    }
-    else
-    {
-        finalDebit = "";
-        finalCredit = absoluteAmount;
-    }
-}
+                if (isNegative)
+                {
+                    finalDebit = absoluteAmount;
+                    finalCredit = "";
+                }
+                else
+                {
+                    finalDebit = "";
+                    finalCredit = absoluteAmount;
+                }
+            }
 
             statement.Transactions.Add(new TransactionLine
             {
@@ -378,9 +378,40 @@ else if (colMontantConfig != null && !string.IsNullOrEmpty(montantVal))
         }
     }
 
+    // =========================================================================
+    // ÉTAPE 4 : Application de la formule sur le Solde Initial (Si REVERSE_FIRST_TX)
+    // =========================================================================
+    var soldeInitConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "SOLDE_INIT");
+    
+    if (soldeInitConfig != null && !string.IsNullOrEmpty(statement.SoldeInitial) && statement.Transactions.Any())
+    {
+        // Extraction sécurisée de la propriété de calcul de votre BDD (valeur par défaut : "DIRECT")
+        string calculationMethod = soldeInitConfig.CalculationMethod ?? "DIRECT"; 
+
+        if (calculationMethod.Equals("REVERSE_FIRST_TX", StringComparison.OrdinalIgnoreCase))
+        {
+            // 1. Conversion sécurisée du solde extrait en format décimal
+            string formattedSolde = statement.SoldeInitial.Replace(",", ".");
+            if (decimal.TryParse(formattedSolde, System.Globalization.CultureInfo.InvariantCulture, out decimal soldeLu))
+            {
+                // 2. Récupération de la première transaction exécutée
+                var firstTx = statement.Transactions.First();
+                
+                decimal.TryParse(firstTx.Debit?.Replace(",", "."), System.Globalization.CultureInfo.InvariantCulture, out decimal firstDebit);
+                decimal.TryParse(firstTx.Credit?.Replace(",", "."), System.Globalization.CultureInfo.InvariantCulture, out decimal firstCredit);
+
+                // 3. Calcul de l'opération inverse pour obtenir le solde de départ
+                // (Solde Initial = Solde après transaction + Débit - Crédit)
+                decimal vraiSoldeInitial = soldeLu + firstDebit - firstCredit;
+
+                // 4. Ré-affectation au format chaîne standardisé
+                statement.SoldeInitial = vraiSoldeInitial.ToString("F0", System.Globalization.CultureInfo.InvariantCulture);
+            }
+        }
+    }
+
     return statement;
-} 
-private string CleanRawDate(string rawInput)
+}private string CleanRawDate(string rawInput)
 {
     if (string.IsNullOrEmpty(rawInput)) return string.Empty;
     return rawInput.Replace("Période du", "", StringComparison.OrdinalIgnoreCase)
