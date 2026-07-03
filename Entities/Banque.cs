@@ -15,7 +15,9 @@ public class Banque
     [Required]
 [StringLength(250)]
 public string Libelle { get; set; } = string.Empty; // <-- Ajoutez cette ligne
-
+[Required]
+    [StringLength(10)]
+    public string Devise { get; set; } = "XOF";
 
     [StringLength(100)]
     public string? Filiale { get; set; } = string.Empty; // ex: "MALI"

@@ -420,7 +420,203 @@ namespace AfbGenerator.Api.Services
              _formatService = formatService;
              _templateService=templateService;
         }
-public async Task<GenerateResultDto> GenerateFromFilegeneriqueAsync(
+
+
+        public async Task<GenerateResultDto> GenerateFromExtractedDataAsync(
+    ExtractedAccountStatement extractedData, 
+    string? outputPath = null, 
+    CancellationToken cancellationToken = default)
+{
+    if (extractedData == null || extractedData.Transactions == null || !extractedData.Transactions.Any())
+        return new GenerateResultDto { Message = "Aucune transaction valide fournie pour la génération.", TotalMouvements = 0 };
+
+    if (string.IsNullOrWhiteSpace(extractedData.BankName))
+        throw new InvalidOperationException("Le nom/code de la banque n'est pas spécifié dans les données extraites.");
+
+    // ── 1. RÉCUPÉRATION DE LA BANQUE ET CONFIGURATION DEPUIS LA BDD ──────────
+    string targetBankCode = extractedData.BankName.Trim().ToLowerInvariant(); // ex: "uba"
+
+    // Récupération automatique de l'entité Banque active liée à ce Code de banque
+    var banqueEntity = await _context.Banques
+        .FirstOrDefaultAsync(b => b.CodeBanque.ToLower() == targetBankCode && b.IsActive, cancellationToken);
+
+    if (banqueEntity == null)
+        throw new InvalidOperationException($"Aucune configuration de banque active trouvée pour le code banque '{targetBankCode}'.");
+
+    if (string.IsNullOrWhiteSpace(banqueEntity.Compte))
+        throw new InvalidOperationException($"Le numéro de compte n'est pas configuré pour la banque '{targetBankCode}'.");
+
+    if (string.IsNullOrWhiteSpace(banqueEntity.Devise))
+        throw new InvalidOperationException($"La devise n'est pas configurée pour la banque '{targetBankCode}'.");
+
+    // Extraction des paramètres issus directement de l'entité Banque chargée
+    string compteCourant = banqueEntity.Compte;
+    string devise = banqueEntity.Devise;
+
+    string cleanAccountParam = System.Text.RegularExpressions.Regex.Replace(compteCourant, @"[^\d]", "");
+    
+    decimal initialBalance = 0;
+    if (!string.IsNullOrEmpty(extractedData.SoldeInitial))
+    {
+        initialBalance = _libelleService.ParseFlexibleAmount(extractedData.SoldeInitial);
+    }
+
+    // Récupération directe des dates déjà calculées par l'extraction
+    DateTime fileStartDate = DateTime.TryParse(extractedData.DateDebut, out var startParsed) ? startParsed : DateTime.Now;
+    DateTime fileEndDate = DateTime.TryParse(extractedData.DateFin, out var endParsed) ? endParsed : DateTime.Now;
+
+    var bankFluxConfig = await _context.Fluxes
+        .Where(f => f.BankCode == banqueEntity.CodeBanque)
+        .ToDictionaryAsync(f => f.FluxCode.Trim().ToUpperInvariant(), f => f, cancellationToken);
+
+    var activeCurrencies = await _currencyService.GetAllAsync(cancellationToken);
+    var currencyDecimalsMap = activeCurrencies.ToDictionary(c => c.CUR_ID.Trim().ToUpperInvariant(), c => (int)c.DECIMALSNUMBER);
+
+    string cleanBank    = cleanAccountParam.Length >= 5  ? cleanAccountParam[0..5]  : cleanAccountParam.PadRight(5);
+    string cleanGuichet = cleanAccountParam.Length >= 10 ? cleanAccountParam[5..10] : "00000";
+    string cleanRib     = cleanAccountParam.Length >= 11 ? cleanAccountParam[10..]  : "0";
+
+    string cleanDeviseParam = devise.Trim().ToUpperInvariant();
+    int dynamicDecimals = currencyDecimalsMap.TryGetValue(cleanDeviseParam, out var dbDecimals) ? dbDecimals : 2;
+
+    var missingKeywords = new List<MissingMappingItem>();
+    var movements = new List<Afb120MovementRow>();
+
+    // ── 2. MAPPAGE DES TRANSACTIONS DIRECTES ─────────────────────────────────
+    foreach (var txn in extractedData.Transactions)
+    {
+        var originalLibelle = txn.Libelle?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(originalLibelle)) continue;
+
+        decimal amount = 0;
+        string sens = "C";
+
+        if (!string.IsNullOrEmpty(txn.Debit))
+        {
+            amount = _libelleService.ParseFlexibleAmount(txn.Debit);
+            sens = "D";
+        }
+        else if (!string.IsNullOrEmpty(txn.Credit))
+        {
+            amount = _libelleService.ParseFlexibleAmount(txn.Credit);
+            sens = "C";
+        }
+        else if (!string.IsNullOrEmpty(txn.Montant)) 
+        {
+            amount = _libelleService.ParseFlexibleAmount(txn.Montant);
+            sens = amount >= 0 ? "C" : "D";
+            amount = Math.Abs(amount);
+        }
+
+        DateTime? opDate = DateTime.TryParse(txn.DateOp, out var d1) ? d1 : (DateTime?)null;
+        DateTime? valDate = DateTime.TryParse(txn.DateValeur, out var d2) ? d2 : opDate;
+
+        string cib1 = "  ";
+        string cib2 = "    ";
+
+        var normalizedLibelle = _libelleService.NormalizeKeyword(originalLibelle);
+        var detection = await _libelleService.DetectCategorieAsync(normalizedLibelle, amount, banqueEntity.CodeBanque, cancellationToken);
+
+        if (detection != null && detection.IsDetected && !string.IsNullOrWhiteSpace(detection.Flux))
+        {
+            string cleanFluxCode = detection.Flux.Trim().ToUpperInvariant();
+            if (bankFluxConfig.TryGetValue(cleanFluxCode, out var fluxSetup))
+            {
+                cib1 = fluxSetup.Cib1 ?? "  ";
+                cib2 = fluxSetup.Cib2 ?? "    ";
+            }
+
+            movements.Add(new Afb120MovementRow
+            {
+                BankCode = cleanBank,
+                Guichet = cleanGuichet,
+                Rib2 = cleanRib,
+                OperationDate = opDate,
+                ValueDate = valDate,
+                Amount = amount,
+                Currency = cleanDeviseParam,
+                Sens = sens,
+                Label = originalLibelle.Length > 33 ? originalLibelle[..33] : originalLibelle,
+                Cib1 = cib1,
+                Cib2 = cib2,
+                DecimalsNumber = dynamicDecimals
+            });
+        }
+        else
+        {
+            missingKeywords.Add(new MissingMappingItem
+            {
+                OriginalLabel = originalLibelle,
+                Amount = amount,
+                BankCode = banqueEntity.CodeBanque,
+                Reason = "Aucun mapping flux trouvé pour ce libellé."
+            });
+        }
+    }
+
+    if (missingKeywords.Any())
+        throw new MissingMappingsException(missingKeywords.OrderBy(k => k.OriginalLabel).ToList());
+
+    if (!movements.Any())
+        return new GenerateResultDto { Message = "Aucune transaction valide après filtrage.", TotalMouvements = 0 };
+
+    movements = movements.OrderBy(m => m.OperationDate ?? DateTime.MinValue).ToList();
+
+    // ── 3. CALCULS DU SOLDE FINAL ET ÉCRITURE ──────────────────────────────
+   // ── 3. CALCULS DU SOLDE FINAL ET ÉCRITURE ──────────────────────────────
+    var totalCredit = movements.Where(r => r.Sens == "C").Sum(r => r.Amount);
+    var totalDebit = movements.Where(r => r.Sens == "D").Sum(r => r.Amount);
+    var closingBalance = initialBalance + totalCredit - totalDebit;
+
+    string finalOutputDir = string.IsNullOrWhiteSpace(outputPath) ? @"C:\BankFiles\AFB120\" : outputPath;
+    Directory.CreateDirectory(finalOutputDir);
+
+    var sb = new StringBuilder();
+    var first = movements.First();
+
+    // Ligne 01
+    sb.AppendLine(BuildLine01(first.BankCode, first.Guichet, first.Rib2, first.Currency, first.DecimalsNumber, fileStartDate, Math.Abs(initialBalance), initialBalance >= 0 ? "C" : "D"));
+
+    // Lignes 04
+    foreach (var row in movements)
+    {
+        sb.AppendLine(BuildLine04(row));
+    }
+
+    // Ligne 07
+    sb.AppendLine(BuildLine07(first.BankCode, first.Guichet, first.Rib2, first.Currency, first.DecimalsNumber, fileEndDate, Math.Abs(closingBalance), closingBalance >= 0 ? "C" : "D"));
+
+    var fileName = $"AFB120_{cleanAccountParam}_{DateTime.Now:yyyyMMdd_HHmmss}.txt";
+    var filePath = Path.Combine(finalOutputDir, fileName);
+    await File.WriteAllTextAsync(filePath, sb.ToString(), Encoding.UTF8);
+
+    // 🔥 CORRECTION : Préparation et alimentation du résultat complet
+    var result = new GenerateResultDto 
+    { 
+        Message = "Fichier généré avec succès.", 
+        TotalMouvements = movements.Count,
+        NombreFichiers = 1 // Ne pas oublier d'incrémenter le nombre de fichiers
+    };
+
+    result.Fichiers.Add(filePath);
+
+    // 🔥 Ajout des détails financiers par compte
+    result.Detail.Add(new GenerateDetailDto
+    {
+        BankCode = banqueEntity.CodeBanque,
+        AccountId = compteCourant,
+        Currency = cleanDeviseParam,
+        NbMouvements = movements.Count,
+        TotalCredit = totalCredit,
+        TotalDebit = totalDebit,
+        SoldeOuverture = initialBalance,
+        SoldeFinal = closingBalance,
+        Fichier = fileName
+    });
+
+    return result;
+}
+public async Task<GenerateResultDto> GenerateFromFilegeneriqueAsync2(
     IFormFile file, 
     string compteCourant, 
     string devise, 

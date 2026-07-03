@@ -18,6 +18,7 @@ public class AppDbContext : DbContext
     public DbSet<FluxMapping> FluxMappings { get; set; }
     public DbSet<BankTemplate> BankTemplates { get; set; }
     public DbSet<TemplateField> TemplateFields { get; set; }
+    public DbSet<Devise> Devises { get; set; }
     // Dans AppDbContext.cs
 public DbSet<BankFileFormat> BankFileFormats { get; set; }
     protected override void OnModelCreating(ModelBuilder modelBuilder)

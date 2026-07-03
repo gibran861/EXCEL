@@ -14,6 +14,7 @@ namespace AfbGenerator.Api.Models;
 
      public class GenerateDetailDto
     {
+        public string? BankCode { get; set; }
         public string? AccountId { get; set; }
         public string? Currency { get; set; }
         public int NbMouvements { get; set; }
