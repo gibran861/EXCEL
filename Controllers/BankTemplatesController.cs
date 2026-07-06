@@ -3,7 +3,9 @@ using System;
 using System.Threading.Tasks;
 using AfbGenerator.Api.Services;
 using System.Data;
+using AfbGenerator.Api.Data;
 using AfbGenerator.Api.Models;
+using Microsoft.EntityFrameworkCore;
 namespace AfbGenerator.Api.Controllers;
 
 [ApiController]
@@ -11,11 +13,13 @@ namespace AfbGenerator.Api.Controllers;
 public class BankTemplatesController : ControllerBase
 {
     private readonly BankTemplateService _templateService;
+     private readonly AppDbContext _context;
     private readonly FileService _fileService = new FileService(); // Notre service de lecture Excel/CSV
 
-    public BankTemplatesController(BankTemplateService templateService)
+    public BankTemplatesController(BankTemplateService templateService,AppDbContext context)
     {
         _templateService = templateService;
+        _context = context;
     }
 
     // POST: api/banktemplates/save
@@ -113,6 +117,17 @@ public async Task<IActionResult> ProcessFileForAfb(IFormFile file, [FromForm] st
         }
     }
 }
+
+[HttpGet("bank/{bankName}")]
+public async Task<IActionResult> GetTemplate(string bankName)
+{
+    var template = await _templateService.GetByBank(bankName);
+
+    if (template == null)
+        return NotFound();
+
+    return Ok(template);
+}
     [HttpPost("detect")]
 public async Task<IActionResult> DetectUploadedFile(IFormFile file, [FromForm] string delimiter = ";")
 {
@@ -160,6 +175,36 @@ public async Task<IActionResult> DetectUploadedFile(IFormFile file, [FromForm] s
     {
         System.IO.File.Delete(tempPath);
     }
+    }
+}
+
+[HttpGet("template-by-bank/{bankName}")]
+public async Task<IActionResult> GetTemplateByBankName(string bankName)
+{
+    if (string.IsNullOrWhiteSpace(bankName))
+    {
+        return BadRequest("Le nom de la banque est obligatoire.");
+    }
+
+    try
+    {
+        // Recherche du template par son nom en incluant la liste de ses champs configurés
+        // Utilise le bon nom de DbSet pour tes templates (ex: _context.BankTemplates)
+        var template = await _context.BankTemplates
+            .Include(t => t.Fields) 
+            .FirstOrDefaultAsync(t => t.BankName.ToLower() == bankName.ToLower());
+
+        if (template == null)
+        {
+            return NotFound(new { message = $"Aucun modèle de configuration trouvé pour la banque : {bankName}" });
+        }
+
+        // Renvoie exactement l'objet complet (id, bankName, fileExtension, fields, etc.)
+        return Ok(template);
+    }
+    catch (Exception ex)
+    {
+        return StatusCode(500, new { error = "Erreur lors de la récupération du modèle : " + ex.Message });
     }
 }
 }

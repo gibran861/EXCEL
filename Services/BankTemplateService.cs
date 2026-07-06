@@ -433,6 +433,36 @@ string GetCellValue(TemplateField config) =>
 
     return statement;
 }
+
+public async Task<BankTemplate?> GetByBank(string bankName)
+{
+    var template = await _context.BankTemplates
+        .Include(x => x.Fields)
+        .FirstOrDefaultAsync(x => x.BankName == bankName);
+
+    if (template == null)
+        return null;
+
+    return new BankTemplate
+    {
+        BankName = template.BankName,
+        FileExtension = template.FileExtension,
+        CsvDelimiter = template.CsvDelimiter,
+
+        Fields = template.Fields.Select(f => new TemplateField
+        {
+            FieldKey = f.FieldKey,
+            FieldLabel = f.FieldLabel,
+            AnchorRowIndex = f.AnchorRowIndex,
+            AnchorColumnIndex = f.AnchorColumnIndex,
+            AnchorTextValue = f.AnchorTextValue,
+            TargetRowIndex = f.TargetRowIndex,
+            TargetColumnIndex = f.TargetColumnIndex,
+            IsHeaderField = f.IsHeaderField,
+            CalculationMethod = f.CalculationMethod
+        }).ToList()
+    };
+}
 private string CleanRawDate(string rawInput)
 {
     if (string.IsNullOrEmpty(rawInput)) return string.Empty;
