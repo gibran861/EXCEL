@@ -117,6 +117,70 @@ public async Task<IActionResult> ProcessFileForAfb(IFormFile file, [FromForm] st
         }
     }
 }
+[HttpPut("template-by-bank/{bankName}")]
+public async Task<IActionResult> UpdateTemplateByBankName(string bankName, [FromBody] BankTemplate updatedTemplate)
+{
+    if (updatedTemplate == null)
+    {
+        return BadRequest("Les données du modèle sont obligatoires.");
+    }
+
+    if (string.IsNullOrWhiteSpace(bankName))
+    {
+        return BadRequest("Le nom de la banque dans l'URL est obligatoire.");
+    }
+
+    try
+    {
+        // 1. Récupérer le template existant avec ses champs actuels
+        // Ajuste '_context.BankTemplates' selon le nom exact dans ton DbContext
+        var existingTemplate = await _context.BankTemplates
+            .Include(t => t.Fields)
+            .FirstOrDefaultAsync(t => t.BankName.ToLower() == bankName.ToLower());
+
+        if (existingTemplate == null)
+        {
+            return NotFound(new { message = $"Aucun modèle trouvé à modifier pour la banque : {bankName}" });
+        }
+
+        // 2. Mise à jour des propriétés globales du template
+        existingTemplate.BankName = updatedTemplate.BankName;
+        existingTemplate.FileExtension = updatedTemplate.FileExtension;
+        existingTemplate.CsvDelimiter = updatedTemplate.CsvDelimiter;
+
+        // 3. Nettoyage des anciens champs associés pour éviter les conflits d'IDs
+        if (existingTemplate.Fields != null && existingTemplate.Fields.Any())
+        {
+            // Supprime les anciens enregistrements directement via le DbSet de liaison
+            // Si ta table s'appelle autrement (ex: _context.TemplateFields), ajuste le nom ici :
+            _context.TemplateFields.RemoveRange(existingTemplate.Fields);
+        }
+
+        // 4. Injection des nouveaux champs (TemplateField) reçus
+        existingTemplate.Fields = new List<TemplateField>();
+        if (updatedTemplate.Fields != null)
+        {
+            foreach (var field in updatedTemplate.Fields)
+            {
+                // On réinitialise l'Id à 0 pour que la BDD l'incrémente automatiquement comme une nouveauté
+                field.Id = 0; 
+                field.BankTemplateId = existingTemplate.Id;
+                
+                existingTemplate.Fields.Add(field);
+            }
+        }
+
+        // 5. Sauvegarde des changements
+        await _context.SaveChangesAsync();
+
+        // On renvoie le template fraîchement mis à jour
+        return Ok(existingTemplate);
+    }
+    catch (Exception ex)
+    {
+        return StatusCode(500, new { error = "Erreur lors de la mise à jour du modèle : " + ex.Message });
+    }
+}
 
 [HttpGet("bank/{bankName}")]
 public async Task<IActionResult> GetTemplate(string bankName)
