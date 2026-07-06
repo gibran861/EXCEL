@@ -1,8 +1,10 @@
 using AfbGenerator.Api.Models;
 using AfbGenerator.Api.Services;
 using Microsoft.AspNetCore.Mvc;
+using AfbGenerator.Api.Data;
 using AfbGenerator.Api.Services;
 using System.Data;
+using Microsoft.EntityFrameworkCore;
 namespace AfbGenerator.Api.Controllers;
 
 [ApiController]
@@ -10,12 +12,14 @@ namespace AfbGenerator.Api.Controllers;
 public class AFBController : ControllerBase
 {
     private readonly Afb120Service _Afb120Service;
-    private readonly BankTemplateService _templateService;
+    private readonly BankTemplateService _templateService; 
+    private readonly AppDbContext _context; 
     private readonly FileService _fileService = new FileService();
-    public AFBController(Afb120Service Afb120Service, BankTemplateService templateService)
+    public AFBController(Afb120Service Afb120Service, BankTemplateService templateService ,AppDbContext context)
     {
         _Afb120Service = Afb120Service;
         _templateService = templateService;
+        _context= context ;
     }
 
 [HttpPost("generate")]
@@ -59,16 +63,26 @@ public async Task<IActionResult> ProcessAndGenerateAfb(IFormFile file)
     if (file == null || file.Length == 0)
         return BadRequest("Le fichier est obligatoire.");
 
-    var tempPath = Path.GetTempFileName();
+    // 1. Récupérer la vraie extension d'origine (.csv, .xlsx, etc.)
+    string originalExtension = Path.GetExtension(file.FileName).ToLower();
+    
+    // 2. Générer un nom unique AVEC la bonne extension d'origine
+    string tempFileName = $"{Guid.NewGuid()}{originalExtension}";
+    string tempPath = Path.Combine(Path.GetTempPath(), tempFileName);
+
     try 
     {
-        // 1. Lecture physique et extraction (Stable)
+        // Écriture du fichier physique sur le disque
         using (var stream = new FileStream(tempPath, FileMode.Create)) 
         { 
             await file.CopyToAsync(stream); 
         }
         
-        DataTable fileData = _fileService.LoadFileToDataTable(tempPath, ";");
+        // 🔥 DÉTECTION AUTOMATIQUE DU DÉLIMITEUR
+        // Si c'est un CSV, on applique la virgule "," automatiquement, sinon ";" par défaut
+        string autoDelimiter = (originalExtension == ".csv") ? "," : ";";
+        
+        DataTable fileData = _fileService.LoadFileToDataTable(tempPath, autoDelimiter);
         
         BankTemplate detectedTemplate = await _templateService.DetectTemplateAsync(fileData);
         if (detectedTemplate == null)
@@ -78,7 +92,7 @@ public async Task<IActionResult> ProcessAndGenerateAfb(IFormFile file)
 
         ExtractedAccountStatement finalData = _templateService.ExtractData(fileData, detectedTemplate);
 
-        // 2. Génération de l'AFB
+        // 3. Génération de l'AFB
         try
         {
             var result = await _Afb120Service.GenerateFromExtractedDataAsync(finalData);
@@ -86,8 +100,6 @@ public async Task<IActionResult> ProcessAndGenerateAfb(IFormFile file)
         }
         catch (MissingMappingsException ex)
         {
-            // 🔥 CORRECTION ICI : On renvoie un statut 422 (UnprocessableEntity) 
-            // et on passe DIRECTEMENT la liste des mots-clés sans objet enveloppe.
             return UnprocessableEntity(ex.MissingKeywords);
         }
     }
@@ -97,7 +109,78 @@ public async Task<IActionResult> ProcessAndGenerateAfb(IFormFile file)
     }
     finally
     {
+        // NETTOYAGE : Toujours supprimer le fichier temporaire à la fin
+        if (System.IO.File.Exists(tempPath))
+        {
+            System.IO.File.Delete(tempPath);
+        }
+    }
+}
+
+// 💡 Assure-toi d'avoir injecté ton DbContext dans le constructeur de ton contrôleur, par exemple :
+// private readonly YourDbContext _context;
+
+[HttpPost("summary")]
+public async Task<IActionResult> GetFileSummary(IFormFile file)
+{
+    if (file == null || file.Length == 0)
+    {
+        return BadRequest("Aucun fichier n'a été fourni.");
+    }
+
+    string originalExtension = Path.GetExtension(file.FileName).ToLower();
+    string tempFileName = $"{Guid.NewGuid()}{originalExtension}";
+    string tempPath = Path.Combine(Path.GetTempPath(), tempFileName);
+    
+    try
+    {
+        using (var stream = new FileStream(tempPath, FileMode.Create)) 
+        { 
+            await file.CopyToAsync(stream); 
+        }
         
+        string autoDelimiter = (originalExtension == ".csv") ? "," : ";";
+        DataTable fileData = _fileService.LoadFileToDataTable(tempPath, autoDelimiter);
+
+        // 1. Détection du modèle de la banque
+        BankTemplate detectedTemplate = await _templateService.DetectTemplateAsync(fileData);
+        if (detectedTemplate == null)
+        {
+            return NotFound(new { message = "Structure inconnue. Aucun modèle de banque ne correspond à ce fichier." });
+        }
+
+        // 2. Extraction globale des données (pour récupérer dates et soldes nettoyés)
+        ExtractedAccountStatement extractedData = _templateService.ExtractData(fileData, detectedTemplate);
+
+        // 3. 🔥 RECUPERATION DEPUIS LA CLASSE BANQUE (BASE DE DONNÉES)
+        // On cherche la banque correspondante à 'detectedTemplate.BankName'
+        var banqueInfo = await _context.Banques
+            .FirstOrDefaultAsync(b => b.CodeBanque == detectedTemplate.BankName && b.IsActive);
+
+        // 4. Construction du récapitulatif avec les données croisées
+        var summary = new
+        {
+            BankName = detectedTemplate.BankName,
+            // Si la banque existe en BDD, on prend son compte et sa devise, sinon fallback
+            AccountNumber = banqueInfo?.Compte ?? "Non configuré",
+            Currency = banqueInfo?.Devise ?? "XOF", 
+            InitialBalance = extractedData.SoldeInitial,
+            StartDate = extractedData.DateDebut,
+            EndDate = extractedData.DateFin
+        };
+
+        return Ok(summary);
+    }
+    catch (Exception ex)
+    {
+        return StatusCode(500, new { error = "Erreur lors de la génération du récapitulatif : " + ex.Message });
+    }
+    finally
+    {
+        if (System.IO.File.Exists(tempPath))
+        {
+            System.IO.File.Delete(tempPath);
+        }
     }
 }
 // [HttpPost("generateAFB")]

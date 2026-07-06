@@ -164,10 +164,12 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
 {
     var statement = new ExtractedAccountStatement
     {
-        BankName = template.BankName
+        BankName = template.BankName,
+        // 🔥 CORRECTIF 1 : Initialisation de la liste pour éliminer le NullReferenceException
+        Transactions = new List<TransactionLine>() 
     };
 
-    // Configurations des colonnes de transactions (Utile pour comparer les index à l'Étape 1)
+    // Configurations des colonnes de transactions
     var colDateConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_DATE");
     var colLibelleConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_LIBELLE");
     var colDateValConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_DATE_VALEUR");
@@ -180,15 +182,15 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
     bool mustCalculateDates = false;
 
     // =========================================================================
-    // ÉTAPE 1 : Extraction des champs d'en-tête fixes
+    // ÉTAPE 1 : Extraction des champs d'en-tête fixes (Sécurisée)
     // =========================================================================
     foreach (var field in template.Fields.Where(f => f.IsHeaderField))
     {
-        if (field.TargetRowIndex >= fileData.Rows.Count || field.TargetColumnIndex >= fileData.Columns.Count)
+        // 🔥 CORRECTIF 2 : Validation stricte des index (évite les crashs si le fichier CSV a moins de colonnes/lignes)
+        if (field.TargetRowIndex < 0 || field.TargetRowIndex >= fileData.Rows.Count || 
+            field.TargetColumnIndex < 0 || field.TargetColumnIndex >= fileData.Columns.Count)
             continue;
 
-        // CONDITION : Si la date de début ou fin est configurée sur la même colonne que TX_DATE,
-        // on l'ignore ici à l'Étape 1 et on active le calcul dynamique pour plus tard.
         if ((field.FieldKey == "DATE_DEBUT" || field.FieldKey == "DATE_FIN" || field.FieldKey == "PERIODE") 
             && colDateConfig != null && field.TargetColumnIndex == colDateConfig.TargetColumnIndex)
         {
@@ -272,16 +274,23 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
 
         for (int i = startRowIndex; i < fileData.Rows.Count; i++)
         {
-            string dateVal = colDateConfig != null && colDateConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colDateConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
-            string libelleVal = colLibelleConfig != null && colLibelleConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colLibelleConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
-            string dateValeurVal = colDateValConfig != null && colDateValConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colDateValConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
-            
-            string montantVal = colMontantConfig != null && colMontantConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colMontantConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
-            string debitVal = colDebitConfig != null && colDebitConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colDebitConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
-            string creditVal = colCreditConfig != null && colCreditConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colCreditConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
-            string sensVal = colSensConfig != null && colSensConfig.TargetColumnIndex < fileData.Columns.Count ? fileData.Rows[i][colSensConfig.TargetColumnIndex]?.ToString()?.Trim() : null;
+            // 🔥 CORRECTIF 3 : Utilisation d'une fonction d'extraction sécurisée pour éviter les index en dehors du tableau
+           // Modifie simplement la signature avec le bon type 'TemplateField' 
+string GetCellValue(TemplateField config) => 
+    config != null && config.TargetColumnIndex >= 0 && config.TargetColumnIndex < fileData.Columns.Count 
+    ? fileData.Rows[i][config.TargetColumnIndex]?.ToString()?.Trim() 
+    : null;
 
-            if (string.IsNullOrEmpty(dateVal) && string.IsNullOrEmpty(libelleVal))
+        string dateVal = GetCellValue(colDateConfig);
+        string libelleVal = GetCellValue(colLibelleConfig);
+        string dateValeurVal = GetCellValue(colDateValConfig);
+        string montantVal = GetCellValue(colMontantConfig);
+        string debitVal = GetCellValue(colDebitConfig);
+        string creditVal = GetCellValue(colCreditConfig);
+        string sensVal = GetCellValue(colSensConfig);
+
+            // Si toute la ligne est vide (très fréquent en fin de fichier CSV), on passe
+            if (string.IsNullOrEmpty(dateVal) && string.IsNullOrEmpty(libelleVal) && string.IsNullOrEmpty(montantVal))
             {
                 continue;
             }
@@ -291,8 +300,8 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
                 continue;
             }
 
-            if ((colDateConfig != null && dateVal.Equals(colDateConfig.AnchorTextValue, StringComparison.OrdinalIgnoreCase)) ||
-                (colLibelleConfig != null && libelleVal.Equals(colLibelleConfig.AnchorTextValue, StringComparison.OrdinalIgnoreCase)))
+            if ((colDateConfig != null && dateVal != null && dateVal.Equals(colDateConfig.AnchorTextValue, StringComparison.OrdinalIgnoreCase)) ||
+                (colLibelleConfig != null && libelleVal != null && libelleVal.Equals(colLibelleConfig.AnchorTextValue, StringComparison.OrdinalIgnoreCase)))
             {
                 continue;
             }
@@ -341,8 +350,8 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
             {
                 string parsingTarget = montantVal.Replace(",", ".");
                 bool isNegative = parsingTarget.StartsWith("-") || 
-                                 parsingTarget.EndsWith("-") || 
-                                 (parsingTarget.StartsWith("(") && parsingTarget.EndsWith(")"));
+                                  parsingTarget.EndsWith("-") || 
+                                  (parsingTarget.StartsWith("(") && parsingTarget.EndsWith(")"));
 
                 string absoluteAmount = montantVal.Replace("-", "").Replace("(", "").Replace(")", "").Trim();
 
@@ -358,6 +367,7 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
                 }
             }
 
+            // 🔥 Désormais 100% sécurisé grâce au correctif 1
             statement.Transactions.Add(new TransactionLine
             {
                 DateOp = dateVal,
@@ -416,7 +426,6 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
             DateTime minDate = validDates.Min();
             DateTime maxDate = validDates.Max();
 
-            // Formatage standardisé des dates calculées (Modifiable selon vos besoins)
             statement.DateDebut = minDate.ToString("yyyy-MM-dd");
             statement.DateFin = maxDate.ToString("yyyy-MM-dd");
         }

@@ -68,66 +68,98 @@ public class BankTemplatesController : ControllerBase
     }
 
 [HttpPost("process-file")]
-public async Task<IActionResult> ProcessFileForAfb(IFormFile file)
+public async Task<IActionResult> ProcessFileForAfb(IFormFile file, [FromForm] string delimiter = ";")
 {
-    // 1. Lecture physique du fichier temporaire via le FileService
-    var tempPath = Path.GetTempFileName();
-    using (var stream = new FileStream(tempPath, FileMode.Create)) { await file.CopyToAsync(stream); }
-    
-    DataTable fileData = _fileService.LoadFileToDataTable(tempPath, ";");
-  
-
-    // 2. Détection automatique du modèle (Matching d'ancres)
-    BankTemplate detectedTemplate = await _templateService.DetectTemplateAsync(fileData);
-    if (detectedTemplate == null)
+    if (file == null || file.Length == 0)
     {
-        return BadRequest("Impossible de générer l'AFB : Format de fichier non reconnu.");
+        return BadRequest("Aucun fichier n'a été fourni.");
     }
 
-    // 3. Extraction dynamique des données mappées
-    ExtractedAccountStatement finalData = _templateService.ExtractData(fileData, detectedTemplate);
+    string originalExtension = Path.GetExtension(file.FileName).ToLower();
+    string tempFileName = $"{Guid.NewGuid()}{originalExtension}";
+    string tempPath = Path.Combine(Path.GetTempPath(), tempFileName);
+    
+    try
+    {
+        using (var stream = new FileStream(tempPath, FileMode.Create)) 
+        { 
+            await file.CopyToAsync(stream); 
+        }
+        
+        // 🔥 MODIFICATION ICI : On utilise la variable "delimiter" reçue au lieu du ";" en dur !
+        DataTable fileData = _fileService.LoadFileToDataTable(tempPath, delimiter);
 
-    // Vos données sont prêtes à être envoyées à votre ancienne logique AFB 120 !
-    // Vous avez : finalData.NumCompte, finalData.DateDebut, et la liste finalData.Transactions
-    return Ok(finalData);
+        // 2. Détection automatique du modèle
+        BankTemplate detectedTemplate = await _templateService.DetectTemplateAsync(fileData);
+        if (detectedTemplate == null)
+        {
+            return BadRequest("Impossible de générer l'AFB : Format de fichier non reconnu.");
+        }
+
+        // 3. Extraction dynamique des données mappées
+        ExtractedAccountStatement finalData = _templateService.ExtractData(fileData, detectedTemplate);
+
+        return Ok(finalData);
+    }
+    catch (Exception ex)
+    {
+        return StatusCode(500, new { error = "Erreur lors du traitement : " + ex.Message });
+    }
+    finally
+    {
+        if (System.IO.File.Exists(tempPath))
+        {
+            System.IO.File.Delete(tempPath);
+        }
+    }
 }
     [HttpPost("detect")]
-    public async Task<IActionResult> DetectUploadedFile(IFormFile file, [FromForm] string delimiter = ";")
+public async Task<IActionResult> DetectUploadedFile(IFormFile file, [FromForm] string delimiter = ";")
+{
+    if (file == null || file.Length == 0)
     {
-        if (file == null || file.Length == 0)
-        {
-            return BadRequest("Aucun fichier n'a été fourni.");
-        }
-
-        try
-        {
-            // 1. Sauvegarder temporairement le fichier reçu pour le lire
-            var tempPath = Path.GetTempFileName();
-            using (var stream = new FileStream(tempPath, FileMode.Create))
-            {
-                await file.CopyToAsync(stream);
-            }
-
-            // 2. Convertir le fichier en DataTable
-            DataTable fileData = _fileService.LoadFileToDataTable(tempPath, delimiter);
-            
-            // Supprimer le fichier temporaire
-            
-
-            // 3. Lancer le moteur de détection
-            BankTemplate detectedTemplate = await _templateService.DetectTemplateAsync(fileData);
-
-            if (detectedTemplate == null)
-            {
-                return NotFound(new { message = "Structure inconnue. Aucun modèle de banque ne correspond à ce fichier." });
-            }
-
-            // 4. On retourne le modèle trouvé. Le front-end sait maintenant quel format appliquer !
-            return Ok(detectedTemplate);
-        }
-        catch (Exception ex)
-        {
-            return StatusCode(500, new { error = "Erreur lors de l'analyse : " + ex.Message });
-        }
+        return BadRequest("Aucun fichier n'a été fourni.");
     }
+
+    // 1. Récupérer l'extension d'origine (.csv, .xlsx, etc.)
+    string originalExtension = Path.GetExtension(file.FileName).ToLower();
+    
+    // 2. Générer un chemin temporaire unique AVEC la bonne extension d'origine
+    string tempFileName = $"{Guid.NewGuid()}{originalExtension}";
+    string tempPath = Path.Combine(Path.GetTempPath(), tempFileName);
+    
+    try
+    {
+        // 3. Sauvegarder le fichier reçu sur le disque
+        using (var stream = new FileStream(tempPath, FileMode.Create))
+        {
+            await file.CopyToAsync(stream);
+        }
+
+        // 4. Convertir le fichier en DataTable (LoadFileToDataTable verra la vraie extension)
+        DataTable fileData = _fileService.LoadFileToDataTable(tempPath, delimiter);
+
+        // 5. Lancer le moteur de détection
+        BankTemplate detectedTemplate = await _templateService.DetectTemplateAsync(fileData);
+
+        if (detectedTemplate == null)
+        {
+            return NotFound(new { message = "Structure inconnue. Aucun modèle de banque ne correspond à ce fichier." });
+        }
+
+        return Ok(detectedTemplate);
+    }
+    catch (Exception ex)
+    {
+        return StatusCode(500, new { error = "Erreur lors de l'analyse : " + ex.Message });
+    }
+    finally
+    {
+        // 🚨 NETTOYAGE : On supprime le fichier du répertoire temporaire
+      if (System.IO.File.Exists(tempPath))
+    {
+        System.IO.File.Delete(tempPath);
+    }
+    }
+}
 }
