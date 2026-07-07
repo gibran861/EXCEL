@@ -58,7 +58,7 @@ public async Task<IActionResult> GenerateFromExcel(
     }
 }
 [HttpPost("process-and-generate-afb")]
-public async Task<IActionResult> ProcessAndGenerateAfb(IFormFile file)
+public async Task<IActionResult> ProcessAndGenerateAfb(IFormFile file, [FromForm] decimal? soldeInitial = null)
 {
     if (file == null || file.Length == 0)
         return BadRequest("Le fichier est obligatoire.");
@@ -72,14 +72,16 @@ public async Task<IActionResult> ProcessAndGenerateAfb(IFormFile file)
 
     try 
     {
+        // 🔥 LOG CONSOLE : Affiche la valeur passée par le front (ou "null" si non fournie)
+        Console.WriteLine($"[ProcessAndGenerateAfb] Fichier reçu : {file.FileName} | Solde Initial fourni par le Front : {(soldeInitial.HasValue ? soldeInitial.Value.ToString() : "null")}");
+
         // Écriture du fichier physique sur le disque
         using (var stream = new FileStream(tempPath, FileMode.Create)) 
         { 
             await file.CopyToAsync(stream); 
         }
         
-        // 🔥 DÉTECTION AUTOMATIQUE DU DÉLIMITEUR
-        // Si c'est un CSV, on applique la virgule "," automatiquement, sinon ";" par défaut
+        // DÉTECTION AUTOMATIQUE DU DÉLIMITEUR
         string autoDelimiter = (originalExtension == ".csv") ? "," : ";";
         
         DataTable fileData = _fileService.LoadFileToDataTable(tempPath, autoDelimiter);
@@ -90,7 +92,8 @@ public async Task<IActionResult> ProcessAndGenerateAfb(IFormFile file)
             return BadRequest("Impossible de générer l'AFB : Format de fichier non reconnu.");
         }
 
-        ExtractedAccountStatement finalData = _templateService.ExtractData(fileData, detectedTemplate);
+        // Passage du soldeInitial optionnel reçu du formulaire
+        ExtractedAccountStatement finalData = _templateService.ExtractData(fileData, detectedTemplate, soldeInitial);
 
         // 3. Génération de l'AFB
         try

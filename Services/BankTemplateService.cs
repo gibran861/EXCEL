@@ -159,13 +159,11 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
 /// <summary>
     /// Extrait les données brutes d'un fichier selon la configuration d'un modèle validé
     /// </summary>
-
-public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate template)
+public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate template, decimal? optionalSoldeInitial = null)
 {
     var statement = new ExtractedAccountStatement
     {
         BankName = template.BankName,
-        // 🔥 CORRECTIF 1 : Initialisation de la liste pour éliminer le NullReferenceException
         Transactions = new List<TransactionLine>() 
     };
 
@@ -186,7 +184,6 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
     // =========================================================================
     foreach (var field in template.Fields.Where(f => f.IsHeaderField))
     {
-        // 🔥 CORRECTIF 2 : Validation stricte des index (évite les crashs si le fichier CSV a moins de colonnes/lignes)
         if (field.TargetRowIndex < 0 || field.TargetRowIndex >= fileData.Rows.Count || 
             field.TargetColumnIndex < 0 || field.TargetColumnIndex >= fileData.Columns.Count)
             continue;
@@ -238,7 +235,7 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
     }
 
     // =========================================================================
-    // SÉCURITÉ / FALLBACK : Recherche textuelle globale du Solde Initial
+    // SÉCURITÉ / FALLBACK 1 : Recherche textuelle globale du Solde Initial
     // =========================================================================
     if (string.IsNullOrEmpty(statement.SoldeInitial))
     {
@@ -265,6 +262,14 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
     }
 
     // =========================================================================
+    // 🔥 SÉCURITÉ / FALLBACK 2 : Utilisation du solde passé en paramètre s'il est toujours vide
+    // =========================================================================
+    if (string.IsNullOrEmpty(statement.SoldeInitial) && optionalSoldeInitial.HasValue)
+    {
+        statement.SoldeInitial = optionalSoldeInitial.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    // =========================================================================
     // ÉTAPE 2 : Extraction et normalisation des transactions
     // =========================================================================
     var anyTableField = template.Fields.FirstOrDefault(f => !f.IsHeaderField);
@@ -274,22 +279,19 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
 
         for (int i = startRowIndex; i < fileData.Rows.Count; i++)
         {
-            // 🔥 CORRECTIF 3 : Utilisation d'une fonction d'extraction sécurisée pour éviter les index en dehors du tableau
-           // Modifie simplement la signature avec le bon type 'TemplateField' 
-string GetCellValue(TemplateField config) => 
-    config != null && config.TargetColumnIndex >= 0 && config.TargetColumnIndex < fileData.Columns.Count 
-    ? fileData.Rows[i][config.TargetColumnIndex]?.ToString()?.Trim() 
-    : null;
+            string GetCellValue(TemplateField config) => 
+                config != null && config.TargetColumnIndex >= 0 && config.TargetColumnIndex < fileData.Columns.Count 
+                ? fileData.Rows[i][config.TargetColumnIndex]?.ToString()?.Trim() 
+                : null;
 
-        string dateVal = GetCellValue(colDateConfig);
-        string libelleVal = GetCellValue(colLibelleConfig);
-        string dateValeurVal = GetCellValue(colDateValConfig);
-        string montantVal = GetCellValue(colMontantConfig);
-        string debitVal = GetCellValue(colDebitConfig);
-        string creditVal = GetCellValue(colCreditConfig);
-        string sensVal = GetCellValue(colSensConfig);
+            string dateVal = GetCellValue(colDateConfig);
+            string libelleVal = GetCellValue(colLibelleConfig);
+            string dateValeurVal = GetCellValue(colDateValConfig);
+            string montantVal = GetCellValue(colMontantConfig);
+            string debitVal = GetCellValue(colDebitConfig);
+            string creditVal = GetCellValue(colCreditConfig);
+            string sensVal = GetCellValue(colSensConfig);
 
-            // Si toute la ligne est vide (très fréquent en fin de fichier CSV), on passe
             if (string.IsNullOrEmpty(dateVal) && string.IsNullOrEmpty(libelleVal) && string.IsNullOrEmpty(montantVal))
             {
                 continue;
@@ -311,9 +313,6 @@ string GetCellValue(TemplateField config) =>
                 continue;
             }
 
-            // =========================================================================
-            // ÉTAPE 3 : ALGORITHME DE NORMALISATION DU MONTANT
-            // =========================================================================
             string finalDebit = "";
             string finalCredit = "";
 
@@ -367,7 +366,6 @@ string GetCellValue(TemplateField config) =>
                 }
             }
 
-            // 🔥 Désormais 100% sécurisé grâce au correctif 1
             statement.Transactions.Add(new TransactionLine
             {
                 DateOp = dateVal,
@@ -384,10 +382,12 @@ string GetCellValue(TemplateField config) =>
     // ÉTAPE 4 : Application de la formule sur le Solde Initial
     // =========================================================================
     var soldeInitConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "SOLDE_INIT");
-    if (soldeInitConfig != null && !string.IsNullOrEmpty(statement.SoldeInitial) && statement.Transactions.Any())
-    {
-        string calculationMethod = soldeInitConfig.CalculationMethod ?? "DIRECT"; 
+    
+    // 🔥 Modifié : Même si soldeInitConfig est null (car absent de la template), s'il y a un solde initial fourni, on peut appliquer le calcul si la méthode par défaut est requise.
+    string calculationMethod = soldeInitConfig?.CalculationMethod ?? "DIRECT"; 
 
+    if (!string.IsNullOrEmpty(statement.SoldeInitial) && statement.Transactions.Any())
+    {
         if (calculationMethod.Equals("REVERSE_FIRST_TX", StringComparison.OrdinalIgnoreCase))
         {
             string formattedSolde = statement.SoldeInitial.Replace(",", ".");
@@ -433,7 +433,6 @@ string GetCellValue(TemplateField config) =>
 
     return statement;
 }
-
 public async Task<BankTemplate?> GetByBank(string bankName)
 {
     var template = await _context.BankTemplates

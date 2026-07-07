@@ -156,26 +156,60 @@ public class MaintenanceController : ControllerBase
             return StatusCode(500, new { success = false, error = ex.Message });
         }
     }
+    [HttpDelete("purge/templates")]
+    public async Task<IActionResult> PurgeTemplates([FromBody] PurgeRequest request)
+    {
+        if (!IsPasswordValid(request)) return UnauthorizedResponse();
+        _context.Database.SetCommandTimeout(120);
 
-    [HttpDelete("purge/all")]
+        using var transaction = await _context.Database.BeginTransactionAsync();
+        try
+        {
+            // ORDRE CRUCIAL : Supprimer d'abord les champs enfants liés aux structures
+            int fieldsRows = await _context.Database.ExecuteSqlRawAsync("DELETE FROM [dbo].[TemplateFields]");
+            int templatesRows = await _context.Database.ExecuteSqlRawAsync("DELETE FROM [dbo].[BankTemplates]");
+
+            // Réinitialisation des clés
+            await _context.Database.ExecuteSqlRawAsync("DBCC CHECKIDENT ('[dbo].[TemplateFields]', RESEED, 0)");
+            await _context.Database.ExecuteSqlRawAsync("DBCC CHECKIDENT ('[dbo].[BankTemplates]', RESEED, 0)");
+
+            await transaction.CommitAsync();
+
+            return Ok(new { 
+                success = true, 
+                message = "Modèles bancaires et champs supprimés avec succès.",
+                templatesDeleted = templatesRows, 
+                fieldsDeleted = fieldsRows 
+            });
+        }
+        catch (Exception ex)
+        {
+            await transaction.RollbackAsync();
+            return StatusCode(500, new { success = false, error = ex.Message });
+        }
+    }
+
+  [HttpDelete("purge/all")]
     public async Task<IActionResult> PurgeAllTables([FromBody] PurgeRequest request)
     {
         if (!IsPasswordValid(request)) return UnauthorizedResponse();
         
-        // Augmentation globale du timeout pour la grosse opération
         _context.Database.SetCommandTimeout(300);
-
         using var transaction = await _context.Database.BeginTransactionAsync();
 
         try
         {
-            // Ordre strict des dépendances (Enfants d'abord)
+            // Ordre strict des dépendances (Enfants puis Parents)
             int libelles      = await _context.Database.ExecuteSqlRawAsync("DELETE FROM [dbo].[Libelles]");
             int fluxMappings  = await _context.Database.ExecuteSqlRawAsync("DELETE FROM [dbo].[FluxMappings]");
             int fluxes        = await _context.Database.ExecuteSqlRawAsync("DELETE FROM [dbo].[Fluxes]");
             int flux          = await _context.Database.ExecuteSqlRawAsync("DELETE FROM [dbo].[Flux]");
             int cib           = await _context.Database.ExecuteSqlRawAsync("DELETE FROM [dbo].[Cib]");
             int banques       = await _context.Database.ExecuteSqlRawAsync("DELETE FROM [dbo].[Banques]");
+            
+            // 🔥 AJOUT ICI : Suppression des templates (Champs enfants d'abord, puis structure parente)
+            int templateFields = await _context.Database.ExecuteSqlRawAsync("DELETE FROM [dbo].[TemplateFields]");
+            int bankTemplates  = await _context.Database.ExecuteSqlRawAsync("DELETE FROM [dbo].[BankTemplates]");
 
             // Réinitialisation de toutes les clés d'auto-incrément
             await _context.Database.ExecuteSqlRawAsync("DBCC CHECKIDENT ('[dbo].[Libelles]',     RESEED, 0)");
@@ -183,14 +217,27 @@ public class MaintenanceController : ControllerBase
             await _context.Database.ExecuteSqlRawAsync("DBCC CHECKIDENT ('[dbo].[Fluxes]',       RESEED, 0)");
             await _context.Database.ExecuteSqlRawAsync("DBCC CHECKIDENT ('[dbo].[Flux]',         RESEED, 0)");
             await _context.Database.ExecuteSqlRawAsync("DBCC CHECKIDENT ('[dbo].[Banques]',      RESEED, 0)");
+            
+            // 🔥 AJOUT ICI : Reseed des nouvelles tables
+            await _context.Database.ExecuteSqlRawAsync("DBCC CHECKIDENT ('[dbo].[TemplateFields]', RESEED, 0)");
+            await _context.Database.ExecuteSqlRawAsync("DBCC CHECKIDENT ('[dbo].[BankTemplates]',  RESEED, 0)");
 
             await transaction.CommitAsync();
 
             return Ok(new
             {
                 success = true,
-                message = "Toutes les tables ont été purgées avec succès.",
-                details = new { Libelles = libelles, FluxMappings = fluxMappings, Fluxes = fluxes, Flux = flux, Cib = cib, Banques = banques },
+                message = "Toutes les tables (y compris les modèles de banques) ont été purgées avec succès.",
+                details = new { 
+                    Libelles = libelles, 
+                    FluxMappings = fluxMappings, 
+                    Fluxes = fluxes, 
+                    Flux = flux, 
+                    Cib = cib, 
+                    Banques = banques,
+                    TemplateFields = templateFields,
+                    BankTemplates = bankTemplates
+                },
                 purgedAt = DateTime.UtcNow
             });
         }
