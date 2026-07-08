@@ -167,6 +167,46 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
         Transactions = new List<TransactionLine>() 
     };
 
+    // Fonction locale pour extraire et nettoyer proprement le solde initial
+    string CleanHeaderAmount(string rawValue)
+    {
+        if (string.IsNullOrEmpty(rawValue)) return "";
+
+        // Suppression des espaces normaux et insécables
+        string clean = rawValue.Replace(" ", "").Replace("\u00A0", "").Trim();
+
+        // Cas 1 : Format anglo-saxon avec plusieurs virgules de milliers (ex: 141,887,235)
+        if (clean.Count(c => c == ',') > 1)
+        {
+            clean = clean.Replace(",", ""); 
+        }
+        // Cas 2 : Une seule virgule servant de décimale (ex: 141887235,00)
+        else if (clean.Count(c => c == ',') == 1 && !clean.Contains("."))
+        {
+            // On convertit temporairement en point pour la Regex décimale
+            clean = clean.Replace(",", ".");
+        }
+
+        // Regex qui capture les chiffres ET l'éventuel point décimal
+        var match = System.Text.RegularExpressions.Regex.Match(clean, @"-?\d+(\.\d+)?");
+        if (match.Success)
+        {
+            // Si le résultat se termine par ".00" ou ".0", on peut le nettoyer pour l'AFB
+            string result = match.Value;
+            if (result.Contains("."))
+            {
+                // Optionnel : Si vous préférez garder les entiers sans décimales inutiles pour votre traitement AFB
+                if (decimal.TryParse(result, System.Globalization.CultureInfo.InvariantCulture, out decimal parsedDecimal))
+                {
+                    return parsedDecimal.ToString("F0", System.Globalization.CultureInfo.InvariantCulture);
+                }
+            }
+            return result;
+        }
+
+        return clean;
+    }
+
     // Configurations des colonnes de transactions
     var colDateConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_DATE");
     var colLibelleConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_LIBELLE");
@@ -227,8 +267,8 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
             case "SOLDE_INIT":
                 if (!string.IsNullOrEmpty(rawValue))
                 {
-                    var match = System.Text.RegularExpressions.Regex.Match(rawValue.Replace(" ", ""), @"-?\d+");
-                    statement.SoldeInitial = match.Success ? match.Value : rawValue;
+                    // 🔥 Utilisation de la nouvelle fonction de nettoyage
+                    statement.SoldeInitial = CleanHeaderAmount(rawValue);
                 }
                 break;
         }
@@ -248,10 +288,11 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
                 
                 if (!string.IsNullOrEmpty(cellText) && cellText.Contains("Solde initial", StringComparison.OrdinalIgnoreCase))
                 {
-                    var match = System.Text.RegularExpressions.Regex.Match(cellText.Replace(" ", ""), @"-?\d+");
-                    if (match.Success)
+                    // 🔥 Utilisation de la nouvelle fonction de nettoyage ici aussi
+                    string parsedSolde = CleanHeaderAmount(cellText);
+                    if (!string.IsNullOrEmpty(parsedSolde))
                     {
-                        statement.SoldeInitial = match.Value;
+                        statement.SoldeInitial = parsedSolde;
                         soldeFound = true;
                         break;
                     }
@@ -266,7 +307,7 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
     // =========================================================================
     if (string.IsNullOrEmpty(statement.SoldeInitial) && optionalSoldeInitial.HasValue)
     {
-        statement.SoldeInitial = optionalSoldeInitial.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        statement.SoldeInitial = optionalSoldeInitial.Value.ToString("F0", System.Globalization.CultureInfo.InvariantCulture);
     }
 
     // =========================================================================
@@ -382,8 +423,6 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
     // ÉTAPE 4 : Application de la formule sur le Solde Initial
     // =========================================================================
     var soldeInitConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "SOLDE_INIT");
-    
-    // 🔥 Modifié : Même si soldeInitConfig est null (car absent de la template), s'il y a un solde initial fourni, on peut appliquer le calcul si la méthode par défaut est requise.
     string calculationMethod = soldeInitConfig?.CalculationMethod ?? "DIRECT"; 
 
     if (!string.IsNullOrEmpty(statement.SoldeInitial) && statement.Transactions.Any())
@@ -432,7 +471,7 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
     }
 
     return statement;
-}
+} 
 public async Task<BankTemplate?> GetByBank(string bankName)
 {
     var template = await _context.BankTemplates
