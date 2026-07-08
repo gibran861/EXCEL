@@ -172,30 +172,23 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
     {
         if (string.IsNullOrEmpty(rawValue)) return "";
 
-        // Suppression des espaces normaux et insécables
         string clean = rawValue.Replace(" ", "").Replace("\u00A0", "").Trim();
 
-        // Cas 1 : Format anglo-saxon avec plusieurs virgules de milliers (ex: 141,887,235)
         if (clean.Count(c => c == ',') > 1)
         {
             clean = clean.Replace(",", ""); 
         }
-        // Cas 2 : Une seule virgule servant de décimale (ex: 141887235,00)
         else if (clean.Count(c => c == ',') == 1 && !clean.Contains("."))
         {
-            // On convertit temporairement en point pour la Regex décimale
             clean = clean.Replace(",", ".");
         }
 
-        // Regex qui capture les chiffres ET l'éventuel point décimal
         var match = System.Text.RegularExpressions.Regex.Match(clean, @"-?\d+(\.\d+)?");
         if (match.Success)
         {
-            // Si le résultat se termine par ".00" ou ".0", on peut le nettoyer pour l'AFB
             string result = match.Value;
             if (result.Contains("."))
             {
-                // Optionnel : Si vous préférez garder les entiers sans décimales inutiles pour votre traitement AFB
                 if (decimal.TryParse(result, System.Globalization.CultureInfo.InvariantCulture, out decimal parsedDecimal))
                 {
                     return parsedDecimal.ToString("F0", System.Globalization.CultureInfo.InvariantCulture);
@@ -207,7 +200,6 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
         return clean;
     }
 
-    // Configurations des colonnes de transactions
     var colDateConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_DATE");
     var colLibelleConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_LIBELLE");
     var colDateValConfig = template.Fields.FirstOrDefault(f => f.FieldKey == "TX_DATE_VALEUR");
@@ -267,7 +259,6 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
             case "SOLDE_INIT":
                 if (!string.IsNullOrEmpty(rawValue))
                 {
-                    // 🔥 Utilisation de la nouvelle fonction de nettoyage
                     statement.SoldeInitial = CleanHeaderAmount(rawValue);
                 }
                 break;
@@ -288,7 +279,6 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
                 
                 if (!string.IsNullOrEmpty(cellText) && cellText.Contains("Solde initial", StringComparison.OrdinalIgnoreCase))
                 {
-                    // 🔥 Utilisation de la nouvelle fonction de nettoyage ici aussi
                     string parsedSolde = CleanHeaderAmount(cellText);
                     if (!string.IsNullOrEmpty(parsedSolde))
                     {
@@ -303,7 +293,7 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
     }
 
     // =========================================================================
-    // 🔥 SÉCURITÉ / FALLBACK 2 : Utilisation du solde passé en paramètre s'il est toujours vide
+    // SÉCURITÉ / FALLBACK 2 : Utilisation du solde passé en paramètre s'il est toujours vide
     // =========================================================================
     if (string.IsNullOrEmpty(statement.SoldeInitial) && optionalSoldeInitial.HasValue)
     {
@@ -332,6 +322,16 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
             string debitVal = GetCellValue(colDebitConfig);
             string creditVal = GetCellValue(colCreditConfig);
             string sensVal = GetCellValue(colSensConfig);
+
+            // 🔥 CHANGEMENT : Remplacement des accents é, è, É, È par la lettre E/e dans le libellé
+            if (!string.IsNullOrEmpty(libelleVal))
+            {
+                libelleVal = libelleVal
+                    .Replace("é", "e")
+                    .Replace("è", "e")
+                    .Replace("É", "E")
+                    .Replace("È", "E");
+            }
 
             if (string.IsNullOrEmpty(dateVal) && string.IsNullOrEmpty(libelleVal) && string.IsNullOrEmpty(montantVal))
             {
@@ -471,7 +471,7 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
     }
 
     return statement;
-} 
+}
 public async Task<BankTemplate?> GetByBank(string bankName)
 {
     var template = await _context.BankTemplates
