@@ -323,14 +323,23 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
             string creditVal = GetCellValue(colCreditConfig);
             string sensVal = GetCellValue(colSensConfig);
 
-            // 🔥 CHANGEMENT : Remplacement des accents é, è, É, È par la lettre E/e dans le libellé
             if (!string.IsNullOrEmpty(libelleVal))
             {
+                // 🔥 NOUVEAU CHANGEMENT : Suppression des retours à la ligne (\r\n, \n, \r) et remplacement par un espace
+                libelleVal = libelleVal
+                    .Replace("\r\n", " ")
+                    .Replace("\n", " ")
+                    .Replace("\r", " ");
+
+                // 🔥 CHANGEMENT PRÉCÉDENT : Remplacement des accents é, è, É, È par la lettre E/e
                 libelleVal = libelleVal
                     .Replace("é", "e")
                     .Replace("è", "e")
                     .Replace("É", "E")
                     .Replace("È", "E");
+
+                // Nettoyage des espaces doubles créés éventuellement par les remplacements et Trim final
+                libelleVal = System.Text.RegularExpressions.Regex.Replace(libelleVal, @"\s+", " ").Trim();
             }
 
             if (string.IsNullOrEmpty(dateVal) && string.IsNullOrEmpty(libelleVal) && string.IsNullOrEmpty(montantVal))

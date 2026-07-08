@@ -33,32 +33,60 @@ namespace AfbGenerator.Server.Controllers
         }
 
         // ── 2. POST (CREATE) MAPPING ────────────────────────────────────────
-        [HttpPost]
-        public async Task<IActionResult> CreateMapping([FromBody] CreateFluxMappingRequest request)
-        {
-            if (string.IsNullOrWhiteSpace(request.Keyword))
-                return BadRequest("Le mot-clé est obligatoire.");
+       [HttpPost]
+public async Task<IActionResult> CreateMapping([FromBody] CreateFluxMappingRequest request)
+{
+    if (string.IsNullOrWhiteSpace(request.Keyword))
+        return BadRequest("Le mot-clé est obligatoire.");
 
-            var keywordUpper = request.Keyword.Trim().ToUpperInvariant();
-            bool exists = await _context.FluxMappings.AnyAsync(m => m.Keyword.ToUpper() == keywordUpper);
-            
-        
-            var mapping = new FluxMapping
-            {
-                Flux = request.Flux.Trim(),
-                Keyword = request.Keyword.Trim(),
-                Operator = request.Operator ?? "ANY",
+    // 🔥 LOG 1 : Affichage du mot-clé brut reçu par l'API
+    Console.WriteLine($"[API] Tentative d'ajout du mot-clé brut reçu : '{request.Keyword}' pour le flux : '{request.Flux}' et la banque : '{request.BankCode}'");
+
+    // Normalisation du mot-clé (remplacement des accents é et è)
+    string normalizedKeyword = request.Keyword.Trim()
+        .Replace("é", "e")
+        .Replace("è", "e")
+        .Replace("É", "E")
+        .Replace("È", "E");
+
+    // 🔥 LOG 2 : Affichage du mot-clé après nettoyage des accents é/è
+    Console.WriteLine($"[API] Mot-clé après nettoyage des accents (é, è -> e) : '{normalizedKeyword}'");
+
+    var keywordUpper = normalizedKeyword.ToUpperInvariant();
+    var targetFlux = request.Flux.Trim().ToUpperInvariant();
+    var targetBankCode = request.BankCode?.Trim().ToUpperInvariant();
+    
+    // 🔥 CORRECTION : L'unicité est maintenant vérifiée par le triplet : Mot-clé + Flux + Code Banque
+    bool exists = await _context.FluxMappings.AnyAsync(m => 
+        m.Keyword.ToUpper() == keywordUpper && 
+        m.Flux.ToUpper() == targetFlux && 
+        (string.IsNullOrEmpty(targetBankCode) ? string.IsNullOrEmpty(m.BankCode) : m.BankCode.ToUpper() == targetBankCode)
+    );
+    
+    if (exists)
+    {
+        Console.WriteLine($"[API] [ATTENTION] Le mot-clé '{normalizedKeyword}' existe déjà pour le flux '{request.Flux}' et la banque '{request.BankCode}'.");
+        return BadRequest("Ce mot-clé est déjà configuré pour ce flux et cette banque.");
+    }
+
+    var mapping = new FluxMapping
+    {
+        Flux = request.Flux.Trim(),
+        Keyword = normalizedKeyword, 
+        Operator = request.Operator ?? "ANY",
         TargetAmount = request.TargetAmount,
-        BankCode = request.BankCode,
-                IsActive = true
-            };
+        BankCode = request.BankCode?.Trim(), // Nettoyage des espaces pour le code banque
+        IsActive = true
+    };
 
-            _context.FluxMappings.Add(mapping);
-            await _context.SaveChangesAsync();
+    _context.FluxMappings.Add(mapping);
+    await _context.SaveChangesAsync();
 
-            return Ok(mapping);
-        }
+    // 🔥 LOG 3 : Confirmation du succès de l'insertion en base de données
+    Console.WriteLine($"[API] [SUCCÈS] Le mot-clé '{mapping.Keyword}' a été correctement enregistré pour le flux '{mapping.Flux}' et la banque '{mapping.BankCode}'.");
 
+    return Ok(mapping);
+}
         // ── 3. PUT (EDIT) MAPPING ───────────────────────────────────────────
         [HttpPut("{id}")]
         public async Task<IActionResult> UpdateMapping(int id, [FromBody] UpdateFluxMappingRequest request)
