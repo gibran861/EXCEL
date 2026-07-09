@@ -159,7 +159,12 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
 /// <summary>
     /// Extrait les données brutes d'un fichier selon la configuration d'un modèle validé
     /// </summary>
-public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate template, decimal? optionalSoldeInitial = null)
+public async Task<ExtractedAccountStatement> ExtractData(
+    DataTable fileData, 
+    BankTemplate template, 
+    decimal? optionalSoldeInitial = null, 
+    string? optionalNumCompte = null,
+    CancellationToken cancellationToken = default) // 🔥 MODIFICATION : Méthode devenue Async
 {
     var statement = new ExtractedAccountStatement
     {
@@ -171,7 +176,6 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
     string CleanHeaderAmount(string rawValue)
     {
         if (string.IsNullOrEmpty(rawValue)) return "";
-
         string clean = rawValue.Replace(" ", "").Replace("\u00A0", "").Trim();
 
         if (clean.Count(c => c == ',') > 1)
@@ -196,7 +200,6 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
             }
             return result;
         }
-
         return clean;
     }
 
@@ -253,7 +256,10 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
                 break;
 
             case "NUM_COMPTE":
-                statement.NumCompte = rawValue;
+                if (!string.IsNullOrEmpty(rawValue))
+                {
+                    statement.NumCompte = rawValue;
+                }
                 break;
 
             case "SOLDE_INIT":
@@ -262,6 +268,31 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
                     statement.SoldeInitial = CleanHeaderAmount(rawValue);
                 }
                 break;
+        }
+    }
+
+    // =========================================================================
+    // 🔥 CORRECTION : GESTION CASCADE DU NUMÉRO DE COMPTE VIA LA BDD
+    // =========================================================================
+    if (string.IsNullOrEmpty(statement.NumCompte))
+    {
+        if (!string.IsNullOrEmpty(optionalNumCompte))
+        {
+            // Fallback A : Rien dans le fichier, mais l'utilisateur a sélectionné un compte précis (Cas multi-comptes)
+            statement.NumCompte = optionalNumCompte.Trim();
+        }
+        else if (!string.IsNullOrEmpty(template.BankName))
+        {
+            // Fallback B : Rien dans le fichier ni en paramètre d'interface -> On cherche en BDD
+            string targetBankCode = template.BankName.Trim().ToLowerInvariant();
+
+            var banqueEntity = await _context.Banques
+                .FirstOrDefaultAsync(b => b.CodeBanque.ToLower() == targetBankCode && b.IsActive, cancellationToken);
+
+            if (banqueEntity != null && !string.IsNullOrWhiteSpace(banqueEntity.Compte))
+            {
+                statement.NumCompte = banqueEntity.Compte.Trim();
+            }
         }
     }
 
@@ -325,20 +356,8 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
 
             if (!string.IsNullOrEmpty(libelleVal))
             {
-                // 🔥 NOUVEAU CHANGEMENT : Suppression des retours à la ligne (\r\n, \n, \r) et remplacement par un espace
-                libelleVal = libelleVal
-                    .Replace("\r\n", " ")
-                    .Replace("\n", " ")
-                    .Replace("\r", " ");
-
-                // 🔥 CHANGEMENT PRÉCÉDENT : Remplacement des accents é, è, É, È par la lettre E/e
-                libelleVal = libelleVal
-                    .Replace("é", "e")
-                    .Replace("è", "e")
-                    .Replace("É", "E")
-                    .Replace("È", "E");
-
-                // Nettoyage des espaces doubles créés éventuellement par les remplacements et Trim final
+                libelleVal = libelleVal.Replace("\r\n", " ").Replace("\n", " ").Replace("\r", " ");
+                libelleVal = libelleVal.Replace("é", "e").Replace("è", "e").Replace("É", "E").Replace("È", "E");
                 libelleVal = System.Text.RegularExpressions.Regex.Replace(libelleVal, @"\s+", " ").Trim();
             }
 
@@ -457,25 +476,18 @@ public ExtractedAccountStatement ExtractData(DataTable fileData, BankTemplate te
     if (mustCalculateDates && statement.Transactions.Any())
     {
         var validDates = new List<DateTime>();
-
         foreach (var tx in statement.Transactions)
         {
-            if (!string.IsNullOrEmpty(tx.DateOp))
+            if (!string.IsNullOrEmpty(tx.DateOp) && DateTime.TryParse(tx.DateOp, out DateTime parsedDate))
             {
-                if (DateTime.TryParse(tx.DateOp, out DateTime parsedDate))
-                {
-                    validDates.Add(parsedDate);
-                }
+                validDates.Add(parsedDate);
             }
         }
 
         if (validDates.Any())
         {
-            DateTime minDate = validDates.Min();
-            DateTime maxDate = validDates.Max();
-
-            statement.DateDebut = minDate.ToString("yyyy-MM-dd");
-            statement.DateFin = maxDate.ToString("yyyy-MM-dd");
+            statement.DateDebut = validDates.Min().ToString("yyyy-MM-dd");
+            statement.DateFin = validDates.Max().ToString("yyyy-MM-dd");
         }
     }
 

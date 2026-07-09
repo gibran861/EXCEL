@@ -101,7 +101,7 @@ public async Task<IActionResult> ProcessFileForAfb(IFormFile file, [FromForm] st
         }
 
         // 3. Extraction dynamique des données mappées
-        ExtractedAccountStatement finalData = _templateService.ExtractData(fileData, detectedTemplate);
+        ExtractedAccountStatement finalData = await _templateService.ExtractData(fileData, detectedTemplate);
 
         return Ok(finalData);
     }

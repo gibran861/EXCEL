@@ -58,7 +58,10 @@ public async Task<IActionResult> GenerateFromExcel(
     }
 }
 [HttpPost("process-and-generate-afb")]
-public async Task<IActionResult> ProcessAndGenerateAfb(IFormFile file, [FromForm] decimal? soldeInitial = null)
+public async Task<IActionResult> ProcessAndGenerateAfb(
+    IFormFile file, 
+    [FromForm] decimal? soldeInitial = null,
+    [FromForm] string? numCompte = null) // 💡 AJOUT : Paramètre optionnel reçu du formulaire (Front-end)
 {
     if (file == null || file.Length == 0)
         return BadRequest("Le fichier est obligatoire.");
@@ -72,8 +75,8 @@ public async Task<IActionResult> ProcessAndGenerateAfb(IFormFile file, [FromForm
 
     try 
     {
-        // 🔥 LOG CONSOLE : Affiche la valeur passée par le front (ou "null" si non fournie)
-        Console.WriteLine($"[ProcessAndGenerateAfb] Fichier reçu : {file.FileName} | Solde Initial fourni par le Front : {(soldeInitial.HasValue ? soldeInitial.Value.ToString() : "null")}");
+        // 🔥 LOG CONSOLE : Affiche aussi le numéro de compte reçu par le front s'il y en a un
+        Console.WriteLine($"[ProcessAndGenerateAfb] Fichier : {file.FileName} | Solde Initial : {(soldeInitial.HasValue ? soldeInitial.Value.ToString() : "null")} | Num Compte : {numCompte ?? "null"}");
 
         // Écriture du fichier physique sur le disque
         using (var stream = new FileStream(tempPath, FileMode.Create)) 
@@ -92,8 +95,13 @@ public async Task<IActionResult> ProcessAndGenerateAfb(IFormFile file, [FromForm
             return BadRequest("Impossible de générer l'AFB : Format de fichier non reconnu.");
         }
 
-        // Passage du soldeInitial optionnel reçu du formulaire
-        ExtractedAccountStatement finalData = _templateService.ExtractData(fileData, detectedTemplate, soldeInitial);
+        // 💡 MODIFICATION : Appel asynchrone avec "await" + passage du paramètre "numCompte"
+        ExtractedAccountStatement finalData = await _templateService.ExtractData(
+            fileData, 
+            detectedTemplate, 
+            soldeInitial, 
+            numCompte, 
+            HttpContext.RequestAborted); // Sécurité : annule la tâche si l'utilisateur coupe la requête du navigateur
 
         // 3. Génération de l'AFB
         try
@@ -123,69 +131,69 @@ public async Task<IActionResult> ProcessAndGenerateAfb(IFormFile file, [FromForm
 // 💡 Assure-toi d'avoir injecté ton DbContext dans le constructeur de ton contrôleur, par exemple :
 // private readonly YourDbContext _context;
 
-[HttpPost("summary")]
-public async Task<IActionResult> GetFileSummary(IFormFile file)
-{
-    if (file == null || file.Length == 0)
-    {
-        return BadRequest("Aucun fichier n'a été fourni.");
-    }
+// [HttpPost("summary")]
+// public async Task<IActionResult> GetFileSummary(IFormFile file)
+// {
+//     if (file == null || file.Length == 0)
+//     {
+//         return BadRequest("Aucun fichier n'a été fourni.");
+//     }
 
-    string originalExtension = Path.GetExtension(file.FileName).ToLower();
-    string tempFileName = $"{Guid.NewGuid()}{originalExtension}";
-    string tempPath = Path.Combine(Path.GetTempPath(), tempFileName);
+//     string originalExtension = Path.GetExtension(file.FileName).ToLower();
+//     string tempFileName = $"{Guid.NewGuid()}{originalExtension}";
+//     string tempPath = Path.Combine(Path.GetTempPath(), tempFileName);
     
-    try
-    {
-        using (var stream = new FileStream(tempPath, FileMode.Create)) 
-        { 
-            await file.CopyToAsync(stream); 
-        }
+//     try
+//     {
+//         using (var stream = new FileStream(tempPath, FileMode.Create)) 
+//         { 
+//             await file.CopyToAsync(stream); 
+//         }
         
-        string autoDelimiter = (originalExtension == ".csv") ? "," : ";";
-        DataTable fileData = _fileService.LoadFileToDataTable(tempPath, autoDelimiter);
+//         string autoDelimiter = (originalExtension == ".csv") ? "," : ";";
+//         DataTable fileData = _fileService.LoadFileToDataTable(tempPath, autoDelimiter);
 
-        // 1. Détection du modèle de la banque
-        BankTemplate detectedTemplate = await _templateService.DetectTemplateAsync(fileData);
-        if (detectedTemplate == null)
-        {
-            return NotFound(new { message = "Structure inconnue. Aucun modèle de banque ne correspond à ce fichier." });
-        }
+//         // 1. Détection du modèle de la banque
+//         BankTemplate detectedTemplate = await _templateService.DetectTemplateAsync(fileData);
+//         if (detectedTemplate == null)
+//         {
+//             return NotFound(new { message = "Structure inconnue. Aucun modèle de banque ne correspond à ce fichier." });
+//         }
 
-        // 2. Extraction globale des données (pour récupérer dates et soldes nettoyés)
-        ExtractedAccountStatement extractedData = _templateService.ExtractData(fileData, detectedTemplate);
+//         // 2. Extraction globale des données (pour récupérer dates et soldes nettoyés)
+//         ExtractedAccountStatement extractedData = _templateService.ExtractData(fileData, detectedTemplate);
 
-        // 3. 🔥 RECUPERATION DEPUIS LA CLASSE BANQUE (BASE DE DONNÉES)
-        // On cherche la banque correspondante à 'detectedTemplate.BankName'
-        var banqueInfo = await _context.Banques
-            .FirstOrDefaultAsync(b => b.CodeBanque == detectedTemplate.BankName && b.IsActive);
+//         // 3. 🔥 RECUPERATION DEPUIS LA CLASSE BANQUE (BASE DE DONNÉES)
+//         // On cherche la banque correspondante à 'detectedTemplate.BankName'
+//         var banqueInfo = await _context.Banques
+//             .FirstOrDefaultAsync(b => b.CodeBanque == detectedTemplate.BankName && b.IsActive);
 
-        // 4. Construction du récapitulatif avec les données croisées
-        var summary = new
-        {
-            BankName = detectedTemplate.BankName,
-            // Si la banque existe en BDD, on prend son compte et sa devise, sinon fallback
-            AccountNumber = banqueInfo?.Compte ?? "Non configuré",
-            Currency = banqueInfo?.Devise ?? "XOF", 
-            InitialBalance = extractedData.SoldeInitial,
-            StartDate = extractedData.DateDebut,
-            EndDate = extractedData.DateFin
-        };
+//         // 4. Construction du récapitulatif avec les données croisées
+//         var summary = new
+//         {
+//             BankName = detectedTemplate.BankName,
+//             // Si la banque existe en BDD, on prend son compte et sa devise, sinon fallback
+//             AccountNumber = banqueInfo?.Compte ?? "Non configuré",
+//             Currency = banqueInfo?.Devise ?? "XOF", 
+//             InitialBalance = extractedData.SoldeInitial,
+//             StartDate = extractedData.DateDebut,
+//             EndDate = extractedData.DateFin
+//         };
 
-        return Ok(summary);
-    }
-    catch (Exception ex)
-    {
-        return StatusCode(500, new { error = "Erreur lors de la génération du récapitulatif : " + ex.Message });
-    }
-    finally
-    {
-        if (System.IO.File.Exists(tempPath))
-        {
-            System.IO.File.Delete(tempPath);
-        }
-    }
-}
+//         return Ok(summary);
+//     }
+//     catch (Exception ex)
+//     {
+//         return StatusCode(500, new { error = "Erreur lors de la génération du récapitulatif : " + ex.Message });
+//     }
+//     finally
+//     {
+//         if (System.IO.File.Exists(tempPath))
+//         {
+//             System.IO.File.Delete(tempPath);
+//         }
+//     }
+// }
 // [HttpPost("generateAFB")]
 // public async Task<IActionResult> GenerateFromExcelgenerique(
 //     [FromForm] AfbUploadRequest request,

@@ -443,14 +443,31 @@ namespace AfbGenerator.Api.Services
     if (banqueEntity == null)
         throw new InvalidOperationException($"Aucune configuration de banque active trouvée pour le code banque '{targetBankCode}'.");
 
-    if (string.IsNullOrWhiteSpace(banqueEntity.Compte))
-        throw new InvalidOperationException($"Le numéro de compte n'est pas configuré pour la banque '{targetBankCode}'.");
+   
 
     if (string.IsNullOrWhiteSpace(banqueEntity.Devise))
         throw new InvalidOperationException($"La devise n'est pas configurée pour la banque '{targetBankCode}'.");
 
     // Extraction des paramètres issus directement de l'entité Banque chargée
-    string compteCourant = banqueEntity.Compte;
+    // =========================================================================
+    // 🔥 CORRECTION : STRATÉGIE DE RÉCUPÉRATION DU NUMÉRO DE COMPTE (FALLBACK)
+    // =========================================================================
+    string compteCourant;
+
+    if (!string.IsNullOrWhiteSpace(extractedData.NumCompte))
+    {
+        // Priorité 1 : On utilise le numéro de compte qui vient d'être extrait du fichier (Gestion Multi-comptes native)
+        compteCourant = extractedData.NumCompte.Trim();
+    }
+    else if (!string.IsNullOrWhiteSpace(banqueEntity.Compte))
+    {
+        // Priorité 2 : Si le fichier n'avait pas de compte, on se rabat sur le compte par défaut de la BDD
+        compteCourant = banqueEntity.Compte.Trim();
+    }
+    else
+    {
+        throw new InvalidOperationException($"Le numéro de compte n'a pu être extrait du fichier et n'est pas configuré en BDD pour la banque '{targetBankCode}'.");
+    }
     string devise = banqueEntity.Devise;
 
     string cleanAccountParam = System.Text.RegularExpressions.Regex.Replace(compteCourant, @"[^\d]", "");
@@ -687,7 +704,7 @@ public async Task<GenerateResultDto> GenerateFromFilegeneriqueAsync2(
     DataTable fileDataTable = ConvertToDataTable(rows);
 
     // ── 3. EXTRACTION STRUCTURÉE ET NETTOYAGE (ExtractData) ──────────────────
-    ExtractedAccountStatement extractedData = _templateService.ExtractData(fileDataTable, template);
+    ExtractedAccountStatement extractedData = await _templateService.ExtractData(fileDataTable, template);
 
     // Nettoyage du numéro de compte passé en paramètre (uniquement les chiffres pour l'AFB)
     string cleanAccountParam = System.Text.RegularExpressions.Regex.Replace(compteCourant, @"[^\d]", "");
