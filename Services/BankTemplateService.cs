@@ -60,6 +60,100 @@ public class BankTemplateService
             .Include(t => t.Fields)
             .FirstOrDefaultAsync(t => t.Id == id);
     }
+// public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
+// {
+//     // 1. Récupérer tous les modèles de la BDD
+//     var allTemplates = await _context.BankTemplates
+//         .Include(t => t.Fields)
+//         .ToListAsync();
+
+//     // Fonction locale pour normaliser et nettoyer le texte pour la comparaison (ignore \r, \n et espaces multiples)
+//     string CleanText(string input)
+//     {
+//         if (string.IsNullOrEmpty(input)) return string.Empty;
+//         string cleaned = input.Replace("\r", "").Replace("\n", " ").Replace("\t", " ");
+//         return System.Text.RegularExpressions.Regex.Replace(cleaned, @"\s+", " ").Trim().ToLower();
+//     }
+
+//     foreach (var template in allTemplates)
+//     {
+//         bool isModelMatch = true;
+//         int headerFieldsCount = 0;
+        
+//         int detectedRowOffset = 0; 
+//         bool offsetCalculated = false;
+
+//         // On ne teste d'abord que les en-têtes fixes
+//         var headerFields = template.Fields.Where(f => f.IsHeaderField).ToList();
+
+//         foreach (var field in headerFields)
+//         {
+//             headerFieldsCount++;
+//             bool anchorFoundInFile = false;
+
+//             string cleanedAnchorText = CleanText(field.AnchorTextValue);
+//             if (string.IsNullOrEmpty(cleanedAnchorText)) continue;
+
+//             // CORRECTIF 1 : Augmenter maxCols à 10 au lieu de 5 pour inclure le Crédit (index 5) et le Solde (index 6)
+//             int maxRows = Math.Min(fileData.Rows.Count, 50);
+//             int maxCols = Math.Min(fileData.Columns.Count, 10);
+
+//             for (int r = 0; r < maxRows; r++)
+//             {
+//                 for (int c = 0; c < maxCols; c++)
+//                 {
+//                     string cleanedCellValue = CleanText(fileData.Rows[r][c]?.ToString());
+
+//                     if (!string.IsNullOrEmpty(cleanedCellValue) && 
+//                         cleanedCellValue.Contains(cleanedAnchorText, StringComparison.OrdinalIgnoreCase))
+//                     {
+//                         // CORRECTIF 2 : Si le texte est générique comme "Mouvement" ou "Solde", 
+//                         // on s'assure qu'on est au moins proche de la colonne initialement prévue en BDD
+//                         // pour éviter que le Crédit ne vienne écraser/voler l'index du Débit.
+//                         if ((cleanedAnchorText == "mouvement" || cleanedAnchorText == "solde") && Math.Abs(c - field.AnchorColumnIndex) > 1)
+//                         {
+//                             continue; // Ce n'est probablement pas la bonne colonne pour cette ancre spécifique
+//                         }
+
+//                         anchorFoundInFile = true;
+
+//                         if (!offsetCalculated)
+//                         {
+//                             detectedRowOffset = r - field.AnchorRowIndex;
+//                             offsetCalculated = true;
+//                         }
+
+//                         // Réajustement des coordonnées
+//                         field.AnchorRowIndex = r;
+//                         field.AnchorColumnIndex = c; 
+                        
+//                         field.TargetRowIndex = field.TargetRowIndex + detectedRowOffset;
+//                         break;
+//                     }
+//                 }
+//                 if (anchorFoundInFile) break;
+//             }
+
+//             if (!anchorFoundInFile)
+//             {
+//                 isModelMatch = false;
+//                 break;
+//             }
+//         }
+
+//         if (headerFieldsCount > 0 && isModelMatch)
+//         {
+//             foreach (var tableField in template.Fields.Where(f => !f.IsHeaderField))
+//             {
+//                 tableField.TargetRowIndex = tableField.TargetRowIndex + detectedRowOffset;
+//             }
+
+//             return template; 
+//         }
+//     }
+
+//     return null; 
+// }
 public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
 {
     // 1. Récupérer tous les modèles de la BDD
@@ -67,7 +161,7 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
         .Include(t => t.Fields)
         .ToListAsync();
 
-    // Fonction locale pour normaliser et nettoyer le texte pour la comparaison (ignore \r, \n et espaces multiples)
+    // Fonction locale pour normaliser le texte
     string CleanText(string input)
     {
         if (string.IsNullOrEmpty(input)) return string.Empty;
@@ -75,26 +169,25 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
         return System.Text.RegularExpressions.Regex.Replace(cleaned, @"\s+", " ").Trim().ToLower();
     }
 
+    // Liste pour stocker tous les templates dont la structure physique correspond au fichier
+    var matchingTemplates = new List<(BankTemplate Template, int RowOffset, string ExtractedAccountNumber)>();
+
     foreach (var template in allTemplates)
     {
         bool isModelMatch = true;
         int headerFieldsCount = 0;
-        
         int detectedRowOffset = 0; 
         bool offsetCalculated = false;
 
-        // On ne teste d'abord que les en-têtes fixes
         var headerFields = template.Fields.Where(f => f.IsHeaderField).ToList();
 
         foreach (var field in headerFields)
         {
             headerFieldsCount++;
             bool anchorFoundInFile = false;
-
             string cleanedAnchorText = CleanText(field.AnchorTextValue);
             if (string.IsNullOrEmpty(cleanedAnchorText)) continue;
 
-            // CORRECTIF 1 : Augmenter maxCols à 10 au lieu de 5 pour inclure le Crédit (index 5) et le Solde (index 6)
             int maxRows = Math.Min(fileData.Rows.Count, 50);
             int maxCols = Math.Min(fileData.Columns.Count, 10);
 
@@ -107,12 +200,9 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
                     if (!string.IsNullOrEmpty(cleanedCellValue) && 
                         cleanedCellValue.Contains(cleanedAnchorText, StringComparison.OrdinalIgnoreCase))
                     {
-                        // CORRECTIF 2 : Si le texte est générique comme "Mouvement" ou "Solde", 
-                        // on s'assure qu'on est au moins proche de la colonne initialement prévue en BDD
-                        // pour éviter que le Crédit ne vienne écraser/voler l'index du Débit.
                         if ((cleanedAnchorText == "mouvement" || cleanedAnchorText == "solde") && Math.Abs(c - field.AnchorColumnIndex) > 1)
                         {
-                            continue; // Ce n'est probablement pas la bonne colonne pour cette ancre spécifique
+                            continue; 
                         }
 
                         anchorFoundInFile = true;
@@ -123,10 +213,9 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
                             offsetCalculated = true;
                         }
 
-                        // Réajustement des coordonnées
+                        // Réajustement temporaire des coordonnées pour ce template
                         field.AnchorRowIndex = r;
                         field.AnchorColumnIndex = c; 
-                        
                         field.TargetRowIndex = field.TargetRowIndex + detectedRowOffset;
                         break;
                     }
@@ -141,20 +230,74 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
             }
         }
 
+        // Si la structure physique du template match, on extrait immédiatement le numéro de compte du fichier
         if (headerFieldsCount > 0 && isModelMatch)
         {
-            foreach (var tableField in template.Fields.Where(f => !f.IsHeaderField))
+            string accountNumberInFile = string.Empty;
+            
+            // On cherche le champ configuré pour le numéro de compte dans ce template
+            var accountField = template.Fields.FirstOrDefault(f => f.FieldKey.ToLower().Contains("NUM_COMPTE") || f.FieldKey.ToLower().Contains("NUM_COMPTE"));
+            if (accountField != null)
             {
-                tableField.TargetRowIndex = tableField.TargetRowIndex + detectedRowOffset;
+                // On applique l'offset calculé à la ligne cible théorique
+                int realTargetRow = accountField.TargetRowIndex; 
+                int realTargetCol = accountField.TargetColumnIndex;
+
+                if (realTargetRow >= 0 && realTargetRow < fileData.Rows.Count &&
+                    realTargetCol >= 0 && realTargetCol < fileData.Columns.Count)
+                {
+                    accountNumberInFile = fileData.Rows[realTargetRow][realTargetCol]?.ToString()?.Trim() ?? string.Empty;
+                }
             }
 
-            return template; 
+            matchingTemplates.Add((template, detectedRowOffset, accountNumberInFile));
         }
     }
 
-    return null; 
+    // --- PHASE DE DÉPARTAGE SI PLUSIEURS TEMPLATES MATCHENT ---
+    if (!matchingTemplates.Any()) return null;
+
+    if (matchingTemplates.Count > 1)
+    {
+        Console.WriteLine($"[DetectTemplateAsync] Conflit détecté : {matchingTemplates.Count} templates partagent la même structure.");
+
+        foreach (var match in matchingTemplates)
+        {
+            if (string.IsNullOrWhiteSpace(match.ExtractedAccountNumber)) continue;
+
+            // On regarde si le numéro de compte extrait du fichier existe pour le CodeBanque associé à ce template
+            string targetBankCode = match.Template.BankName.Trim().ToLower();
+            bool accountExistsForThisBank = await _context.Banques
+                .AnyAsync(b => b.CodeBanque.ToLower() == targetBankCode 
+                            && b.Compte.Trim() == match.ExtractedAccountNumber.Trim() 
+                            && b.IsActive);
+
+            if (accountExistsForThisBank)
+            {
+                Console.WriteLine($"[DetectTemplateAsync] Résolution réussie ! Le compte {match.ExtractedAccountNumber} correspond à la banque {match.Template.BankName}");
+                
+                // On applique les offsets définitifs sur le template gagnant avant de le retourner
+                ApplyRowOffsets(match.Template, match.RowOffset);
+                return match.Template;
+            }
+        }
+    }
+
+    // Si un seul template a matché, ou si aucun numéro de compte en BDD n'a permis de départager le conflit, 
+    // on retourne par défaut le premier template trouvé avec ses offsets ajustés.
+    var defaultMatch = matchingTemplates.First();
+    ApplyRowOffsets(defaultMatch.Template, defaultMatch.RowOffset);
+    return defaultMatch.Template;
 }
 
+// Méthode d'aide pour appliquer l'offset final aux lignes de tableau
+private void ApplyRowOffsets(BankTemplate template, int rowOffset)
+{
+    foreach (var tableField in template.Fields.Where(f => !f.IsHeaderField))
+    {
+        tableField.TargetRowIndex = tableField.TargetRowIndex + rowOffset;
+    }
+}
 
 /// <summary>
     /// Extrait les données brutes d'un fichier selon la configuration d'un modèle validé

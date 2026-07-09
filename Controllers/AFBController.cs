@@ -61,7 +61,8 @@ public async Task<IActionResult> GenerateFromExcel(
 public async Task<IActionResult> ProcessAndGenerateAfb(
     IFormFile file, 
     [FromForm] decimal? soldeInitial = null,
-    [FromForm] string? numCompte = null) // 💡 AJOUT : Paramètre optionnel reçu du formulaire (Front-end)
+    [FromForm] string? numCompte = null,
+    [FromForm] string? outputPath = null) // 💡 AJOUT : Le chemin où le fichier AFB doit être généré
 {
     if (file == null || file.Length == 0)
         return BadRequest("Le fichier est obligatoire.");
@@ -75,8 +76,8 @@ public async Task<IActionResult> ProcessAndGenerateAfb(
 
     try 
     {
-        // 🔥 LOG CONSOLE : Affiche aussi le numéro de compte reçu par le front s'il y en a un
-        Console.WriteLine($"[ProcessAndGenerateAfb] Fichier : {file.FileName} | Solde Initial : {(soldeInitial.HasValue ? soldeInitial.Value.ToString() : "null")} | Num Compte : {numCompte ?? "null"}");
+        // 🔥 LOG CONSOLE : Suivi complet des paramètres reçus
+        Console.WriteLine($"[ProcessAndGenerateAfb] Fichier : {file.FileName} | Solde Initial : {(soldeInitial.HasValue ? soldeInitial.Value.ToString() : "null")} | Num Compte : {numCompte ?? "null"} | Output Path : {outputPath ?? "null"}");
 
         // Écriture du fichier physique sur le disque
         using (var stream = new FileStream(tempPath, FileMode.Create)) 
@@ -95,18 +96,24 @@ public async Task<IActionResult> ProcessAndGenerateAfb(
             return BadRequest("Impossible de générer l'AFB : Format de fichier non reconnu.");
         }
 
-        // 💡 MODIFICATION : Appel asynchrone avec "await" + passage du paramètre "numCompte"
+        // Extraction des données du relevé (avec prise en compte du compte sélectionné)
+        // Note: Assurez-vous d'appeler le bon nom de méthode (ExtractDataAsync ou ExtractData selon votre interface)
         ExtractedAccountStatement finalData = await _templateService.ExtractData(
             fileData, 
             detectedTemplate, 
             soldeInitial, 
             numCompte, 
-            HttpContext.RequestAborted); // Sécurité : annule la tâche si l'utilisateur coupe la requête du navigateur
+            HttpContext.RequestAborted);
 
         // 3. Génération de l'AFB
         try
         {
-            var result = await _Afb120Service.GenerateFromExtractedDataAsync(finalData);
+            // 💡 MODIFICATION : Passage de "outputPath" et du jeton d'annulation au service
+            var result = await _Afb120Service.GenerateFromExtractedDataAsync(
+                finalData, 
+                outputPath, 
+                HttpContext.RequestAborted);
+                
             return Ok(result);
         }
         catch (MissingMappingsException ex)
