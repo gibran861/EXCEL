@@ -128,72 +128,93 @@ public async Task<IActionResult> ProcessAndGenerateAfb(
     }
 }
 
-// 💡 Assure-toi d'avoir injecté ton DbContext dans le constructeur de ton contrôleur, par exemple :
-// private readonly YourDbContext _context;
+[HttpPost("summary")]
+public async Task<IActionResult> GetFileSummary(IFormFile file)
+{
+    if (file == null || file.Length == 0)
+    {
+        return BadRequest("Aucun fichier n'a été fourni.");
+    }
 
-// [HttpPost("summary")]
-// public async Task<IActionResult> GetFileSummary(IFormFile file)
-// {
-//     if (file == null || file.Length == 0)
-//     {
-//         return BadRequest("Aucun fichier n'a été fourni.");
-//     }
-
-//     string originalExtension = Path.GetExtension(file.FileName).ToLower();
-//     string tempFileName = $"{Guid.NewGuid()}{originalExtension}";
-//     string tempPath = Path.Combine(Path.GetTempPath(), tempFileName);
+    string originalExtension = Path.GetExtension(file.FileName).ToLower();
+    string tempFileName = $"{Guid.NewGuid()}{originalExtension}";
+    string tempPath = Path.Combine(Path.GetTempPath(), tempFileName);
     
-//     try
-//     {
-//         using (var stream = new FileStream(tempPath, FileMode.Create)) 
-//         { 
-//             await file.CopyToAsync(stream); 
-//         }
+    try
+    {
+        using (var stream = new FileStream(tempPath, FileMode.Create)) 
+        { 
+            await file.CopyToAsync(stream); 
+        }
         
-//         string autoDelimiter = (originalExtension == ".csv") ? "," : ";";
-//         DataTable fileData = _fileService.LoadFileToDataTable(tempPath, autoDelimiter);
+        string autoDelimiter = (originalExtension == ".csv") ? "," : ";";
+        DataTable fileData = _fileService.LoadFileToDataTable(tempPath, autoDelimiter);
 
-//         // 1. Détection du modèle de la banque
-//         BankTemplate detectedTemplate = await _templateService.DetectTemplateAsync(fileData);
-//         if (detectedTemplate == null)
-//         {
-//             return NotFound(new { message = "Structure inconnue. Aucun modèle de banque ne correspond à ce fichier." });
-//         }
+        // 1. Détection du modèle de la banque
+        BankTemplate detectedTemplate = await _templateService.DetectTemplateAsync(fileData);
+        if (detectedTemplate == null)
+        {
+            return NotFound(new { message = "Structure inconnue. Aucun modèle de banque ne correspond à ce fichier." });
+        }
 
-//         // 2. Extraction globale des données (pour récupérer dates et soldes nettoyés)
-//         ExtractedAccountStatement extractedData = _templateService.ExtractData(fileData, detectedTemplate);
+        // 2. 🔥 CORRECTION : Appel asynchrone "await" pour éviter l'erreur CS0029
+        ExtractedAccountStatement extractedData = await _templateService.ExtractData(fileData, detectedTemplate);
 
-//         // 3. 🔥 RECUPERATION DEPUIS LA CLASSE BANQUE (BASE DE DONNÉES)
-//         // On cherche la banque correspondante à 'detectedTemplate.BankName'
-//         var banqueInfo = await _context.Banques
-//             .FirstOrDefaultAsync(b => b.CodeBanque == detectedTemplate.BankName && b.IsActive);
+        // 3. 🔥 MODIFICATION : On récupère TOUTES les lignes de cette banque (gère le multi-comptes)
+        string targetBankCode = detectedTemplate.BankName.Trim().ToLower();
+        var banquesEntities = await _context.Banques
+            .Where(b => b.CodeBanque.ToLower() == targetBankCode && b.IsActive)
+            .ToListAsync();
 
-//         // 4. Construction du récapitulatif avec les données croisées
-//         var summary = new
-//         {
-//             BankName = detectedTemplate.BankName,
-//             // Si la banque existe en BDD, on prend son compte et sa devise, sinon fallback
-//             AccountNumber = banqueInfo?.Compte ?? "Non configuré",
-//             Currency = banqueInfo?.Devise ?? "XOF", 
-//             InitialBalance = extractedData.SoldeInitial,
-//             StartDate = extractedData.DateDebut,
-//             EndDate = extractedData.DateFin
-//         };
+        // Récupération de la liste distincte des numéros de compte disponibles en BDD
+        var listeComptes = banquesEntities
+            .Where(b => !string.IsNullOrWhiteSpace(b.Compte))
+            .Select(b => b.Compte.Trim())
+            .Distinct()
+            .ToList();
 
-//         return Ok(summary);
-//     }
-//     catch (Exception ex)
-//     {
-//         return StatusCode(500, new { error = "Erreur lors de la génération du récapitulatif : " + ex.Message });
-//     }
-//     finally
-//     {
-//         if (System.IO.File.Exists(tempPath))
-//         {
-//             System.IO.File.Delete(tempPath);
-//         }
-//     }
-// }
+        // Détermination du compte par défaut à afficher au front
+        string accountNameFallback = "Non configuré";
+        if (!string.IsNullOrEmpty(extractedData.NumCompte))
+        {
+            accountNameFallback = extractedData.NumCompte; // Priorité au compte lu dans le fichier
+        }
+        else if (listeComptes.Count == 1)
+        {
+            accountNameFallback = listeComptes.First(); // S'il n'y en a qu'un seul en BDD
+        }
+        else if (listeComptes.Count > 1)
+        {
+            accountNameFallback = "Multi-comptes : Veuillez sélectionner"; 
+        }
+
+        // 4. Construction du récapitulatif
+        var summary = new
+        {
+            BankName = detectedTemplate.BankName,
+            AccountNumber = accountNameFallback, 
+            AvailableAccounts = listeComptes, // 🔥 AJOUT : Le front-end reçoit la liste pour générer le composant Select
+            Currency = banquesEntities.FirstOrDefault()?.Devise ?? "XOF", 
+            InitialBalance = extractedData.SoldeInitial,
+            StartDate = extractedData.DateDebut,
+            EndDate = extractedData.DateFin
+        };
+
+        return Ok(summary);
+    }
+    catch (Exception ex)
+    {
+        return StatusCode(500, new { error = "Erreur lors de la génération du récapitulatif : " + ex.Message });
+    }
+    finally
+    {
+        if (System.IO.File.Exists(tempPath))
+        {
+            System.IO.File.Delete(tempPath);
+        }
+    }
+}
+
 // [HttpPost("generateAFB")]
 // public async Task<IActionResult> GenerateFromExcelgenerique(
 //     [FromForm] AfbUploadRequest request,
