@@ -211,7 +211,7 @@ public async Task<IActionResult> ImportBanque(
 }
 
     // 2b. PUT : Modifier une configuration de banque existante
-   [HttpPut("{id}")]
+ [HttpPut("{id}")]
 [ProducesResponseType(StatusCodes.Status204NoContent)]
 [ProducesResponseType(StatusCodes.Status400BadRequest)]
 [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -235,7 +235,7 @@ public async Task<IActionResult> Edit(int id, [FromBody] Banque request, Cancell
     // 2. On prépare le nouveau code nettoyé
     string nouveauCodeBanque = request.CodeBanque.Trim().ToUpperInvariant();
 
-    // 3. Si le code de la banque a changé, on met à jour les tables dépendantes
+    // 3. Si le code de la banque a changé, on met à jour toutes les tables dépendantes
     if (ancienCodeBanque != nouveauCodeBanque)
     {
         // A. Mise à jour de BankTemplates (BankName)
@@ -248,7 +248,7 @@ public async Task<IActionResult> Edit(int id, [FromBody] Banque request, Cancell
             template.BankName = nouveauCodeBanque;
         }
 
-        // B. 🔥 NOUVEAU : Mise à jour de FluxMappings (BankCode)
+        // B. Mise à jour de FluxMappings (BankCode)
         var mappingsAssocies = await _dbContext.FluxMappings
             .Where(m => m.BankCode == ancienCodeBanque)
             .ToListAsync(cancellationToken);
@@ -256,6 +256,16 @@ public async Task<IActionResult> Edit(int id, [FromBody] Banque request, Cancell
         foreach (var mapping in mappingsAssocies)
         {
             mapping.BankCode = nouveauCodeBanque;
+        }
+
+        // C. 🔥 NOUVEAU : Mise à jour de Flux (BankCode)
+        var fluxAssocies = await _dbContext.Fluxes
+            .Where(f => f.BankCode == ancienCodeBanque)
+            .ToListAsync(cancellationToken);
+
+        foreach (var f in fluxAssocies)
+        {
+            f.BankCode = nouveauCodeBanque;
         }
     }
 
@@ -269,7 +279,7 @@ public async Task<IActionResult> Edit(int id, [FromBody] Banque request, Cancell
 
     try
     {
-        // Sauvegarde globale de la banque, des templates et des mappings modifiés
+        // Sauvegarde globale de toutes les entités traquées et modifiées
         await _dbContext.SaveChangesAsync(cancellationToken);
     }
     catch (DbUpdateConcurrencyException)
