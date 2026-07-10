@@ -173,6 +173,10 @@ public async Task<IActionResult> GetFileSummary(IFormFile file)
             .Where(b => b.CodeBanque.ToLower() == targetBankCode && b.IsActive)
             .ToListAsync();
 
+        string displayBankName = banquesEntities
+    .FirstOrDefault(b => !string.IsNullOrWhiteSpace(b.Libelle))?.Libelle 
+    ?? detectedTemplate.BankName;
+
         // Récupération de la liste distincte des numéros de compte disponibles en BDD
         var listeComptes = banquesEntities
             .Where(b => !string.IsNullOrWhiteSpace(b.Compte))
@@ -199,6 +203,7 @@ public async Task<IActionResult> GetFileSummary(IFormFile file)
         var summary = new
         {
             BankName = detectedTemplate.BankName,
+            Libelle = displayBankName,
             AccountNumber = accountNameFallback, 
             AvailableAccounts = listeComptes, // 🔥 AJOUT : Le front-end reçoit la liste pour générer le composant Select
             Currency = banquesEntities.FirstOrDefault()?.Devise ?? "XOF", 

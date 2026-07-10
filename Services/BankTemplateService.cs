@@ -154,6 +154,8 @@ public class BankTemplateService
 
 //     return null; 
 // }
+
+
 public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
 {
     // 1. Récupérer tous les modèles de la BDD
@@ -161,7 +163,6 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
         .Include(t => t.Fields)
         .ToListAsync();
 
-    // Fonction locale pour normaliser le texte
     string CleanText(string input)
     {
         if (string.IsNullOrEmpty(input)) return string.Empty;
@@ -169,7 +170,8 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
         return System.Text.RegularExpressions.Regex.Replace(cleaned, @"\s+", " ").Trim().ToLower();
     }
 
-    // Liste pour stocker tous les templates dont la structure physique correspond au fichier
+    Console.WriteLine($"[DetectTemplateAsync] RECHERCHE templates MATCHING la même structure.");
+
     var matchingTemplates = new List<(BankTemplate Template, int RowOffset, string ExtractedAccountNumber)>();
 
     foreach (var template in allTemplates)
@@ -212,11 +214,7 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
                             detectedRowOffset = r - field.AnchorRowIndex;
                             offsetCalculated = true;
                         }
-
-                        // Réajustement temporaire des coordonnées pour ce template
-                        field.AnchorRowIndex = r;
-                        field.AnchorColumnIndex = c; 
-                        field.TargetRowIndex = field.TargetRowIndex + detectedRowOffset;
+                        
                         break;
                     }
                 }
@@ -230,17 +228,18 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
             }
         }
 
-        // Si la structure physique du template match, on extrait immédiatement le numéro de compte du fichier
+        // Si la structure physique du template match
         if (headerFieldsCount > 0 && isModelMatch)
         {
             string accountNumberInFile = string.Empty;
             
-            // On cherche le champ configuré pour le numéro de compte dans ce template
-            var accountField = template.Fields.FirstOrDefault(f => f.FieldKey.ToLower().Contains("NUM_COMPTE") || f.FieldKey.ToLower().Contains("NUM_COMPTE"));
+            // Recherche du champ NUM_COMPTE
+            var accountField = template.Fields.FirstOrDefault(f => f.FieldKey.Equals("NUM_COMPTE", StringComparison.OrdinalIgnoreCase));
+            
             if (accountField != null)
             {
-                // On applique l'offset calculé à la ligne cible théorique
-                int realTargetRow = accountField.TargetRowIndex; 
+                // CORRECTIF : On applique l'offset sur la valeur d'origine de la BDD sans écraser la propriété immédiatement
+                int realTargetRow = accountField.TargetRowIndex + detectedRowOffset; 
                 int realTargetCol = accountField.TargetColumnIndex;
 
                 if (realTargetRow >= 0 && realTargetRow < fileData.Rows.Count &&
@@ -249,6 +248,8 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
                     accountNumberInFile = fileData.Rows[realTargetRow][realTargetCol]?.ToString()?.Trim() ?? string.Empty;
                 }
             }
+            
+            Console.WriteLine($"[DetectTemplateAsync] Template: {template.BankName} | COMPTE TROUVÉ : '{accountNumberInFile}'");
 
             matchingTemplates.Add((template, detectedRowOffset, accountNumberInFile));
         }
@@ -265,7 +266,6 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
         {
             if (string.IsNullOrWhiteSpace(match.ExtractedAccountNumber)) continue;
 
-            // On regarde si le numéro de compte extrait du fichier existe pour le CodeBanque associé à ce template
             string targetBankCode = match.Template.BankName.Trim().ToLower();
             bool accountExistsForThisBank = await _context.Banques
                 .AnyAsync(b => b.CodeBanque.ToLower() == targetBankCode 
@@ -276,29 +276,31 @@ public async Task<BankTemplate> DetectTemplateAsync(DataTable fileData)
             {
                 Console.WriteLine($"[DetectTemplateAsync] Résolution réussie ! Le compte {match.ExtractedAccountNumber} correspond à la banque {match.Template.BankName}");
                 
-                // On applique les offsets définitifs sur le template gagnant avant de le retourner
-                ApplyRowOffsets(match.Template, match.RowOffset);
+                // On applique les offsets sur TOUS les champs (Headers et Table) uniquement pour le gagnant
+                ApplyAllRowOffsets(match.Template, match.RowOffset);
                 return match.Template;
             }
         }
     }
 
-    // Si un seul template a matché, ou si aucun numéro de compte en BDD n'a permis de départager le conflit, 
-    // on retourne par défaut le premier template trouvé avec ses offsets ajustés.
+    // Si un seul template ou pas de correspondance en BDD, on prend le premier
     var defaultMatch = matchingTemplates.First();
-    ApplyRowOffsets(defaultMatch.Template, defaultMatch.RowOffset);
+    ApplyAllRowOffsets(defaultMatch.Template, defaultMatch.RowOffset);
     return defaultMatch.Template;
 }
 
-// Méthode d'aide pour appliquer l'offset final aux lignes de tableau
-private void ApplyRowOffsets(BankTemplate template, int rowOffset)
+// Méthode pour appliquer proprement les offsets à la fin sur le template sélectionné
+private void ApplyAllRowOffsets(BankTemplate template, int rowOffset)
 {
-    foreach (var tableField in template.Fields.Where(f => !f.IsHeaderField))
+    foreach (var field in template.Fields)
     {
-        tableField.TargetRowIndex = tableField.TargetRowIndex + rowOffset;
+        field.TargetRowIndex = field.TargetRowIndex + rowOffset;
+        if (field.IsHeaderField)
+        {
+            field.AnchorRowIndex = field.AnchorRowIndex + rowOffset;
+        }
     }
 }
-
 /// <summary>
     /// Extrait les données brutes d'un fichier selon la configuration d'un modèle validé
     /// </summary>
