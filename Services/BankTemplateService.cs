@@ -318,11 +318,26 @@ public async Task<ExtractedAccountStatement> ExtractData(
     };
 
     // Fonction locale pour extraire et nettoyer proprement le solde initial
+   // Fonction locale pour extraire et nettoyer proprement le solde initial
     string CleanHeaderAmount(string rawValue)
     {
         if (string.IsNullOrEmpty(rawValue)) return "";
-        string clean = rawValue.Replace(" ", "").Replace("\u00A0", "").Trim();
+        
+        string clean = rawValue.Trim();
 
+        // 1. 🔥 NOUVEAU : Si la cellule contient une date (ex: 31/01/2026 ou 31-12-2025), 
+        // on supprime la date et tout ce qui se trouve avant pour ne pas perturber l'extraction du montant
+        var dateMatch = System.Text.RegularExpressions.Regex.Match(clean, @"\d{2}[/\-]\d{2}[/\-]\d{4}");
+        if (dateMatch.Success)
+        {
+            // On ne garde que ce qui est APRÈS la date trouvée
+            clean = clean.Substring(dateMatch.Index + dateMatch.Length).Trim();
+        }
+
+        // 2. Nettoyage standard des espaces et espaces insécables
+        clean = clean.Replace(" ", "").Replace("\u00A0", "").Trim();
+
+        // Harmonisation des virgules et points pour les décimaux
         if (clean.Count(c => c == ',') > 1)
         {
             clean = clean.Replace(",", ""); 
@@ -332,6 +347,7 @@ public async Task<ExtractedAccountStatement> ExtractData(
             clean = clean.Replace(",", ".");
         }
 
+        // 3. Extraction du nombre final (qui est maintenant isolé de la date)
         var match = System.Text.RegularExpressions.Regex.Match(clean, @"-?\d+(\.\d+)?");
         if (match.Success)
         {
@@ -381,31 +397,80 @@ public async Task<ExtractedAccountStatement> ExtractData(
         {
             case "DATE_DEBUT":
             case "PERIODE":
-                if (!string.IsNullOrEmpty(rawValue) && rawValue.Contains(" au "))
+                if (!string.IsNullOrEmpty(rawValue))
                 {
-                    var parts = rawValue.Split(new[] { " au " }, StringSplitOptions.None);
-                    statement.DateDebut = CleanRawDate(parts[0]);
-                    statement.DateFin = CleanRawDate(parts[1]);
-                }
-                else
-                {
-                    statement.DateDebut = rawValue;
+                    // 1. On cherche l'index du mot " AU " (insensible à la casse)
+                    int auIndex = rawValue.IndexOf(" au ", StringComparison.OrdinalIgnoreCase);
+                    
+                    if (auIndex != -1)
+                    {
+                        // On sépare en deux blocs
+                        string rawDebut = rawValue.Substring(0, auIndex).Trim(); // Ex: "Opération comptable du 01/02/2026"
+                        string rawFin = rawValue.Substring(auIndex + 4).Trim();   // Ex: "28/02/2026"
+
+                        // Nettoyage du bloc de début : on vire "du ", "de ", ou le texte avant la date
+                        // On prend les 11 derniers caractères max (assez pour DD/MM/YYYY ou DD-MMM-YYYY)
+                        int lastSpace = rawDebut.LastIndexOf(' ');
+                        if (lastSpace != -1)
+                        {
+                            rawDebut = rawDebut.Substring(lastSpace + 1).Trim(); // Ne garde que "01/02/2026"
+                        }
+
+                        statement.DateDebut = CleanRawDate(rawDebut);
+                        statement.DateFin = CleanRawDate(rawFin);
+                    }
+                    else
+                    {
+                        statement.DateDebut = rawValue;
+                    }
                 }
                 break;
 
             case "DATE_FIN":
-                if (string.IsNullOrEmpty(statement.DateFin))
+                // Si la date de fin a déjà été extraite proprement via le "AU" au-dessus, on ne fait rien.
+                if (string.IsNullOrEmpty(statement.DateFin) && !string.IsNullOrEmpty(rawValue))
                 {
-                    statement.DateFin = rawValue;
+                    int auIndexFin = rawValue.IndexOf(" au ", StringComparison.OrdinalIgnoreCase);
+                    if (auIndexFin != -1)
+                    {
+                        string rawFin = rawValue.Substring(auIndexFin + 4).Trim();
+                        statement.DateFin = CleanRawDate(rawFin);
+                    }
+                    else
+                    {
+                        statement.DateFin = rawValue;
+                    }
                 }
                 break;
 
             case "NUM_COMPTE":
                 if (!string.IsNullOrEmpty(rawValue))
                 {
-                    statement.NumCompte = rawValue;
+                    string cleanAccount = rawValue.Trim();
+
+                    // 1. On isole la valeur après le caractère ':' si présent
+                    int colonIndex = cleanAccount.IndexOf(':');
+                    if (colonIndex != -1)
+                    {
+                        cleanAccount = cleanAccount.Substring(colonIndex + 1).Trim();
+                    }
+                    else
+                    {
+                        // Fallback si le ':' est absent
+                        cleanAccount = cleanAccount
+                            .Replace("N° Compte", "", StringComparison.OrdinalIgnoreCase)
+                            .Replace("N°Compte", "", StringComparison.OrdinalIgnoreCase)
+                            .Replace("Compte", "", StringComparison.OrdinalIgnoreCase)
+                            .Trim();
+                    }
+
+                    // 2. 🔥 AJOUT : On supprime tous les tirets du numéro de compte
+                    cleanAccount = cleanAccount.Replace("-", "").Trim();
+
+                    statement.NumCompte = cleanAccount;
                 }
                 break;
+                
 
             case "SOLDE_INIT":
                 if (!string.IsNullOrEmpty(rawValue))

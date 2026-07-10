@@ -211,44 +211,76 @@ public async Task<IActionResult> ImportBanque(
 }
 
     // 2b. PUT : Modifier une configuration de banque existante
-    [HttpPut("{id}")]
-    [ProducesResponseType(StatusCodes.Status204NoContent)]
-    [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> Edit(int id, [FromBody] Banque request, CancellationToken cancellationToken)
+   [HttpPut("{id}")]
+[ProducesResponseType(StatusCodes.Status204NoContent)]
+[ProducesResponseType(StatusCodes.Status400BadRequest)]
+[ProducesResponseType(StatusCodes.Status404NotFound)]
+public async Task<IActionResult> Edit(int id, [FromBody] Banque request, CancellationToken cancellationToken)
+{
+    if (id != request.Id)
+        return BadRequest(new { message = "L'ID fourni dans l'URL ne correspond pas à l'ID du corps de la requête." });
+
+    if (!ModelState.IsValid)
+        return BadRequest(ModelState);
+
+    var banqueExistante = await _dbContext.Banques
+        .FirstOrDefaultAsync(b => b.Id == id, cancellationToken);
+
+    if (banqueExistante == null)
+        return NotFound(new { message = $"Banque avec l'ID {id} introuvable." });
+
+    // 1. On mémorise l'ancien code avant toute modification
+    string ancienCodeBanque = banqueExistante.CodeBanque;
+    
+    // 2. On prépare le nouveau code nettoyé
+    string nouveauCodeBanque = request.CodeBanque.Trim().ToUpperInvariant();
+
+    // 3. Si le code de la banque a changé, on met à jour les tables dépendantes
+    if (ancienCodeBanque != nouveauCodeBanque)
     {
-        if (id != request.Id)
-            return BadRequest(new { message = "L'ID fourni dans l'URL ne correspond pas à l'ID du corps de la requête." });
+        // A. Mise à jour de BankTemplates (BankName)
+        var templatesAssocies = await _dbContext.BankTemplates
+            .Where(t => t.BankName == ancienCodeBanque)
+            .ToListAsync(cancellationToken);
 
-        if (!ModelState.IsValid)
-            return BadRequest(ModelState);
-
-        var banqueExistante = await _dbContext.Banques
-            .FirstOrDefaultAsync(b => b.Id == id, cancellationToken);
-
-        if (banqueExistante == null)
-            return NotFound(new { message = $"Banque avec l'ID {id} introuvable." });
-
-        banqueExistante.CodeBanque  = request.CodeBanque.Trim().ToUpperInvariant();
-        banqueExistante.Filiale     = request.Filiale.Trim().ToUpperInvariant();
-        banqueExistante.TypeFichier = request.TypeFichier?.Trim().ToUpperInvariant();
-        banqueExistante.Libelle     = request.Libelle.Trim();
-        banqueExistante.Compte      = request.Compte?.Trim();
-        banqueExistante.IsActive    = request.IsActive;
-
-        try
+        foreach (var template in templatesAssocies)
         {
-            await _dbContext.SaveChangesAsync(cancellationToken);
-        }
-        catch (DbUpdateConcurrencyException)
-        {
-            if (!await BanqueExistsAsync(id, cancellationToken))
-                return NotFound();
-            throw;
+            template.BankName = nouveauCodeBanque;
         }
 
-        return NoContent();
+        // B. 🔥 NOUVEAU : Mise à jour de FluxMappings (BankCode)
+        var mappingsAssocies = await _dbContext.FluxMappings
+            .Where(m => m.BankCode == ancienCodeBanque)
+            .ToListAsync(cancellationToken);
+
+        foreach (var mapping in mappingsAssocies)
+        {
+            mapping.BankCode = nouveauCodeBanque;
+        }
     }
+
+    // 4. Mise à jour des autres propriétés de la banque
+    banqueExistante.CodeBanque  = nouveauCodeBanque;
+    banqueExistante.Filiale     = request.Filiale.Trim().ToUpperInvariant();
+    banqueExistante.TypeFichier = request.TypeFichier?.Trim().ToUpperInvariant();
+    banqueExistante.Libelle     = request.Libelle.Trim();
+    banqueExistante.Compte      = request.Compte?.Trim();
+    banqueExistante.IsActive    = request.IsActive;
+
+    try
+    {
+        // Sauvegarde globale de la banque, des templates et des mappings modifiés
+        await _dbContext.SaveChangesAsync(cancellationToken);
+    }
+    catch (DbUpdateConcurrencyException)
+    {
+        if (!await BanqueExistsAsync(id, cancellationToken))
+            return NotFound();
+        throw;
+    }
+
+    return NoContent();
+}
 
     // 2c. DELETE : Supprimer une banque
     [HttpDelete("{id}")]
