@@ -10,7 +10,10 @@ public class XrtDbContext : DbContext
     }
 
     public DbSet<XrtFlow> XrtFlows => Set<XrtFlow>();
+    public DbSet<FlowViewDto> FlowViews { get; set; }
+    public DbSet<RibAccountView> RibAccountViews { get; set; }
     public DbSet<GS_CUR> GS_CUR { get; set; }
+    public DbSet<FluxCibView> FluxCibViews { get; set; }
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -24,6 +27,16 @@ public class XrtDbContext : DbContext
             entity.Property(e => e.FlowsctsId).HasColumnName("FLOWSCTS_ID");
             entity.Property(e => e.Direction).HasColumnName("DIRECTION");
         });
+        modelBuilder.Entity<FlowViewDto>(eb =>
+        {
+            eb.HasNoKey(); // Car c'est une vue sans clé primaire directe
+            eb.ToView("Flux_sens"); // 🔥 Remplacez par le nom réel de votre vue dans la BDD
+        });
+
+        // Configuration pour entité sans clé (Vue SQL)
+        modelBuilder.Entity<FluxCibView>()
+            .HasNoKey()
+            .ToView("Flux_Cib");
 
         modelBuilder.Entity<GS_CUR>(entity =>
             {

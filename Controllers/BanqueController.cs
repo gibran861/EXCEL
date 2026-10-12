@@ -5,7 +5,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using AfbGenerator.Api.Services;
-using ExcelDataReader; 
+using ExcelDataReader;
+using AfbGenerator.Api.Entities.Xrt;
 
 namespace AfbGenerator.Api.Controllers;
 
@@ -14,13 +15,16 @@ namespace AfbGenerator.Api.Controllers;
 public class BanqueController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
+    private readonly XrtDbContext _XRTContext;
     private readonly IImportService _importService;
 
     public BanqueController(
         AppDbContext dbContext,
+        XrtDbContext xrtContext,
         IImportService importService)
     {
         _dbContext = dbContext;
+        _XRTContext = xrtContext;
         _importService = importService;
     }
 
@@ -56,6 +60,7 @@ public class BanqueController : ControllerBase
         return Ok(libelle);
     }
 
+
     // 1c. GET : Récupérer le libellé à partir du numéro de compte
     [HttpGet("compte/{compte}/libelle")]
     [ProducesResponseType(typeof(string), StatusCodes.Status200OK)]
@@ -74,8 +79,9 @@ public class BanqueController : ControllerBase
         return Ok(libelle);
     }
 
-    // 2. POST : Ajouter une nouvelle configuration de banque
-    [HttpPost]
+    // probleme de ducplication du code banque 5 permmier du Rib
+    //  2. POST : Ajouter une nouvelle configuration de banque
+   /* [HttpPost]
     [ProducesResponseType(typeof(Banque), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<ActionResult<Banque>> Add([FromBody] Banque request, CancellationToken cancellationToken)
@@ -98,9 +104,146 @@ public class BanqueController : ControllerBase
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         return CreatedAtAction(nameof(GetAll), new { id = nouvelleBanque.Id }, nouvelleBanque);
+    }*/
+
+
+[HttpGet("xrt-accounts")]
+[ProducesResponseType(typeof(IEnumerable<RibAccountView>), StatusCodes.Status200OK)]
+public async Task<ActionResult<IEnumerable<RibAccountView>>> GetXrtRibAccounts(
+    [FromQuery] string? search,
+    CancellationToken cancellationToken)
+{
+    var query = _XRTContext.RibAccountViews.AsNoTracking();
+
+    // Filtrage optionnel par numéro de compte RIB ou description
+    if (!string.IsNullOrWhiteSpace(search))
+    {
+        string term = search.Trim().ToUpper();
+        query = query.Where(v => 
+            (v.AccountLocalRib != null && v.AccountLocalRib.ToUpper().Contains(term)) ||
+            (v.Description != null && v.Description.ToUpper().Contains(term)) ||
+            (v.AccountCode != null && v.AccountCode.ToUpper().Contains(term))
+        );
     }
 
-    // 2a. POST : Import Excel
+    var resultats = await query.ToListAsync(cancellationToken);
+
+    return Ok(resultats);
+}
+// 2. POST : Ajouter une nouvelle configuration de banque
+[HttpPost]
+[ProducesResponseType(typeof(Banque), StatusCodes.Status201Created)]
+[ProducesResponseType(StatusCodes.Status400BadRequest)]
+public async Task<ActionResult<Banque>> Add([FromBody] Banque request, CancellationToken cancellationToken)
+{
+    if (!ModelState.IsValid)
+        return BadRequest(ModelState);
+
+    // 1. Nettoyage des chaînes en mémoire C# (ToUpperInvariant est parfait ici)
+    string compteNettoye = request.Compte?.Trim().ToUpperInvariant() ?? string.Empty;
+    string codeBanqueNettoye = request.CodeBanque?.Trim().ToUpperInvariant() ?? string.Empty;
+
+    // 2. Validation du Compte obligatoire
+    if (string.IsNullOrWhiteSpace(compteNettoye))
+    {
+        return BadRequest(new { message = "Le numéro de compte est obligatoire pour identifier la banque avec certitude." });
+    }
+
+    // 3. Validation d'unicité (Utilisation de .ToUpper() pour la traduction LINQ/SQL)
+    bool compteExiste = await _dbContext.Banques
+        .AnyAsync(b => b.Compte != null && b.Compte.Trim().ToUpper() == compteNettoye, cancellationToken);
+
+    if (compteExiste)
+    {
+        return BadRequest(new { message = $"Un enregistrement avec le numéro de compte '{compteNettoye}' existe déjà." });
+    }
+
+    // 4. Instanciation de la nouvelle banque
+    var nouvelleBanque = new Banque
+    {
+        CodeBanque  = codeBanqueNettoye,
+        Filiale     = request.Filiale?.Trim().ToUpperInvariant() ?? string.Empty,
+        TypeFichier = request.TypeFichier?.Trim().ToUpperInvariant(),
+        Libelle     = request.Libelle?.Trim() ?? string.Empty,
+        Devise      = request.Devise?.Trim().ToUpperInvariant(),
+        IsActive    = true,
+        CreatedAt   = DateTime.UtcNow,
+        Compte      = compteNettoye
+    };
+
+    await _dbContext.Banques.AddAsync(nouvelleBanque, cancellationToken);
+    await _dbContext.SaveChangesAsync(cancellationToken);
+
+    return CreatedAtAction(nameof(GetAll), new { id = nouvelleBanque.Id }, nouvelleBanque);
+}
+
+[HttpGet("sync-banques")]
+[ProducesResponseType(typeof(List<Banque>), StatusCodes.Status200OK)]
+public async Task<IActionResult> GetBanqueSynchro(CancellationToken cancellationToken)
+{
+    // 1. Charger les numéros de comptes déjà existants en BDD locale
+    var comptesExistants = await _dbContext.Banques
+        .Where(b => b.Compte != null)
+        .Select(b => b.Compte!.Trim().ToUpper())
+        .ToListAsync(cancellationToken);
+
+    var hashSetComptesExistants = new HashSet<string>(comptesExistants, StringComparer.OrdinalIgnoreCase);
+
+    // 2. Charger les comptes depuis la vue XRT RIBAccount
+    var comptesXrt = await _XRTContext.RibAccountViews
+        .Where(v => !string.IsNullOrEmpty(v.AccountLocalRib))
+        .ToListAsync(cancellationToken);
+
+    // Helper pour extraire le CodeBanque (5 premiers chiffres du RIB)
+    string ExtraireCodeBanque(string rib)
+    {
+        string ribClean = rib.Trim();
+        return ribClean.Length >= 5 ? ribClean.Substring(0, 5).ToUpperInvariant() : string.Empty;
+    }
+
+    // 3. Filtrer et grouper pour éviter les doublons dans le flux XRT
+    var nouvellesBanquesXrt = comptesXrt
+        .Select(v => new
+        {
+            CompteClean      = v.AccountLocalRib!.Trim().ToUpperInvariant(),
+            DescriptionClean = v.Description?.Trim() ?? string.Empty,
+            DeviseClean      = !string.IsNullOrWhiteSpace(v.Devise) 
+                                ? v.Devise.Trim().ToUpperInvariant() 
+                                : "XOF", // Fallback sur XOF si nul ou vide
+            Source           = v
+        })
+        .Where(x => !string.IsNullOrWhiteSpace(x.CompteClean) && !hashSetComptesExistants.Contains(x.CompteClean))
+        .GroupBy(x => x.CompteClean)
+        .Select(g => g.First())
+        .ToList();
+
+    // 4. Instancier et ajouter les nouvelles banques si présente(s) dans XRT
+    if (nouvellesBanquesXrt.Any())
+    {
+        var aAjouter = nouvellesBanquesXrt.Select(x => new Banque
+        {
+            CodeBanque  = ExtraireCodeBanque(x.CompteClean),
+            Compte      = x.CompteClean,
+            Libelle     = !string.IsNullOrWhiteSpace(x.DescriptionClean) ? x.DescriptionClean : $"Banque {x.CompteClean}",
+            Filiale     = "GROUPE",
+            TypeFichier = "EXCEL",
+            Devise      = x.DeviseClean, // 👈 Utilisation de la devise issue de la vue
+            IsActive    = true,
+            CreatedAt   = DateTime.UtcNow
+        }).ToList();
+
+        await _dbContext.Banques.AddRangeAsync(aAjouter, cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    // 5. Charger et retourner la liste complète des banques à jour
+    var listeCompleteBanques = await _dbContext.Banques
+        .AsNoTracking()
+        .OrderBy(b => b.CodeBanque)
+        .ToListAsync(cancellationToken);
+
+    return Ok(listeCompleteBanques);
+}    // 2a. POST : Import Excel
   // BanqueController.cs — endpoint import-excel mis à jour
 [HttpPost("import-excel")]
 [Consumes("multipart/form-data")]

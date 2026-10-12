@@ -13,11 +13,13 @@ namespace AfbGenerator.Api.Controllers;
 public class NEWFLUXCONTROLLER : ControllerBase
 {
     private readonly AppDbContext _dbContext;
+    private readonly XrtDbContext _XRTContext;
     private readonly FluxService _fluxService;
 
-    public NEWFLUXCONTROLLER(AppDbContext dbContext, FluxService fluxService)
+    public NEWFLUXCONTROLLER(AppDbContext dbContext, XrtDbContext XRTContext, FluxService fluxService)
     {
         _dbContext = dbContext;
+        _XRTContext = XRTContext;
         _fluxService = fluxService;
     }
 
@@ -91,6 +93,46 @@ public class NEWFLUXCONTROLLER : ControllerBase
         );
     }
 
+[HttpGet("from-view")]
+[ProducesResponseType(typeof(List<FlowViewDto>), StatusCodes.Status200OK)]
+public async Task<ActionResult<List<FlowViewDto>>> GetFromView(CancellationToken cancellationToken)
+{
+    // Lecture directe depuis la vue SQL
+    var vueFlux = await _XRTContext.FlowViews.ToListAsync(cancellationToken);
+
+    return Ok(vueFlux);
+}
+[HttpGet("sync")]
+[ProducesResponseType(typeof(List<NEWFlux>), StatusCodes.Status200OK)]
+public async Task<ActionResult<List<NEWFlux>>> GetAllSynchro(CancellationToken cancellationToken)
+{
+    // 1. Synchronisation automatique des nouveaux flux depuis la vue
+    var codesExistants = await _dbContext.Flux.Select(f => f.Code).ToListAsync(cancellationToken);
+    
+    var manquantDansVue = await _XRTContext.FlowViews
+        .Where(v => !codesExistants.Contains(v.FLOW_CODE))
+        .ToListAsync(cancellationToken);
+
+    if (manquantDansVue.Any())
+    {
+        var nouveaux = manquantDansVue.Select(v => new NEWFlux
+        {
+            Code = v.FLOW_CODE.Trim().ToUpperInvariant(),
+            Libelle = v.DESCRIPTION?.Trim() ?? string.Empty,
+            TypeFlux = "AUTOMATIQUE",
+            Sens = v.SENS?.Trim().ToUpperInvariant() ?? "C",
+            IsActive = true,
+            CreatedAt = DateTime.UtcNow
+        }).ToList();
+
+        await _dbContext.Flux.AddRangeAsync(nouveaux, cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    // 2. Retourne la liste complète à jour
+    var listeFlux = await _dbContext.Flux.ToListAsync(cancellationToken);
+    return Ok(listeFlux);
+}
 
 [HttpPut("{id:int}")] // On passe par l'ID numérique maintenant
 public async Task<IActionResult> Update(int id, [FromBody] NEWFlux request, CancellationToken cancellationToken)

@@ -22,7 +22,7 @@ public class NEWFlux
 
     [Required]
     [StringLength(10)]
-    public string Sens { get; set; } = string.Empty; // "ENC" ou "DECA"
+    public string? Sens { get; set; } = string.Empty; // "ENC" ou "DECA"
 
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

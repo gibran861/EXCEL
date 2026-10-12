@@ -5,6 +5,7 @@ using  AfbGenerator.Api.Data;
 using ExcelDataReader;
 using  AfbGenerator.Api.Entities;
 using Microsoft.EntityFrameworkCore;
+using AfbGenerator.Api.Entities.Xrt;
 namespace AfbGenerator.Api.Controllers;
 
 [ApiController]
@@ -14,9 +15,11 @@ public class FluxController : ControllerBase
 	private readonly FluxService _fluxService;
     private readonly LibelleService _libelleService;
     private readonly AppDbContext _dbContext;
-	public FluxController(FluxService fluxService,LibelleService libelleService,AppDbContext dbContext)
+    private readonly XrtDbContext _XRTContext;
+	public FluxController(FluxService fluxService, XrtDbContext xrtContext, LibelleService libelleService, AppDbContext dbContext)
 	{
 		_fluxService = fluxService;
+		_XRTContext = xrtContext;
 		_libelleService = libelleService;
         _dbContext = dbContext;
 	}
@@ -53,7 +56,123 @@ public class FluxController : ControllerBase
 			return BadRequest(new { message = ex.Message });
 		}
 	}
+[HttpGet("sync-cib")]
+[ProducesResponseType(typeof(List<FluxResponse>), StatusCodes.Status200OK)]
+public async Task<IActionResult> GetCibSynchro(CancellationToken cancellationToken)
+{
+    // 1. Charger tous les flux depuis NEWFlux (_dbContext.Flux) pour récupérer les Libelle
+    var dictionnaireFluxLocaux = await _dbContext.Flux
+        .ToDictionaryAsync(
+            f => f.Code.Trim().ToUpperInvariant(), 
+            f => f.Libelle, 
+            cancellationToken
+        );
 
+    // 2. Charger les paires (BankCode + FluxCode) déjà existantes dans la table CIB (_dbContext.Fluxes)
+    var combinaisonsCibExistantes = await _dbContext.Fluxes
+        .Select(f => new { 
+            BankCode = f.BankCode.Trim().ToUpperInvariant(), 
+            FluxCode = f.FluxCode.Trim().ToUpperInvariant() 
+        })
+        .ToListAsync(cancellationToken);
+
+    // 3. Charger les éléments depuis la vue XRT
+    var vueXrt = await _XRTContext.FluxCibViews
+        .Where(v => !string.IsNullOrEmpty(v.Flux))
+        .ToListAsync(cancellationToken);
+
+    // Helper pour récupérer le Code Banque le plus fiable disponible
+    string ObtenirCodeBanque(FluxCibView item)
+    {
+        // Priorité 1 : La nouvelle colonne dédiée CODE_BANQUE_RIB
+        if (!string.IsNullOrWhiteSpace(item.CodeBanqueRib))
+            return item.CodeBanqueRib.Trim().ToUpperInvariant();
+
+        // Priorité 2 : Extraction des 5 premiers caractères du RIB
+        string ribClean = item.Rib?.Trim() ?? string.Empty;
+        if (ribClean.Length >= 5)
+            return ribClean.Substring(0, 5).ToUpperInvariant();
+
+        // Priorité 3 : Fallback sur BanqueCode
+        return item.BanqueCode?.Trim().ToUpperInvariant() ?? string.Empty;
+    }
+
+    // 4. Filtrer les paires absentes
+    var nouveauxXrt = vueXrt
+        .Select(v => new
+        {
+            Source = v,
+            BankCodeFinal = ObtenirCodeBanque(v),
+            FluxCodeClean = v.Flux!.Trim().ToUpperInvariant()
+        })
+        .Where(x => !string.IsNullOrEmpty(x.BankCodeFinal) &&
+                    !combinaisonsCibExistantes.Any(e => 
+                        e.BankCode == x.BankCodeFinal && 
+                        e.FluxCode == x.FluxCodeClean))
+        .GroupBy(x => new { x.BankCodeFinal, x.FluxCodeClean })
+        .Select(g => g.First())
+        .ToList();
+
+    var nouveauxACreer = new List<AfbGenerator.Api.Entities.Flux>();
+    var fluxNonTrouves = new HashSet<string>();
+
+    // 5. Parcourir et instancier les entités BDD
+    foreach (var item in nouveauxXrt)
+    {
+        if (dictionnaireFluxLocaux.TryGetValue(item.FluxCodeClean, out var libelleExistant))
+        {
+            nouveauxACreer.Add(new AfbGenerator.Api.Entities.Flux
+            {
+                BankCode  = item.BankCodeFinal, // Utilise la valeur issue de CODE_BANQUE_RIB
+                FluxCode  = item.FluxCodeClean,
+                FluxLabel = libelleExistant,
+                Cib1      = item.Source.Cib1?.Trim() ?? string.Empty,
+                Cib2      = item.Source.Cib2?.Trim() ?? string.Empty,
+                IsActive  = true,
+                CreatedAt = DateTime.UtcNow
+            });
+        }
+        else
+        {
+            fluxNonTrouves.Add(item.FluxCodeClean);
+        }
+    }
+
+    // 6. Sauvegarder les entités BDD
+    if (nouveauxACreer.Any())
+    {
+        await _dbContext.Fluxes.AddRangeAsync(nouveauxACreer, cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    // 7. Charger et mapper la liste complète des CIB vers le DTO FluxResponse
+    var listeComplete = await _dbContext.Fluxes
+        .Select(f => new FluxResponse
+        {
+            Id        = f.Id,
+            BankCode  = f.BankCode,
+            FluxCode  = f.FluxCode,
+            FluxLabel = f.FluxLabel,
+            Cib1      = f.Cib1,
+            Cib2      = f.Cib2,
+            IsActive  = f.IsActive,
+            CreatedAt = f.CreatedAt
+        })
+        .ToListAsync(cancellationToken);
+
+    // 8. Retourner le résultat
+    if (fluxNonTrouves.Any())
+    {
+        return Ok(new
+        {
+            Data = listeComplete,
+            Warning = $"Certains flux de la vue XRT n'existent pas dans la table NEWFlux ({string.Join(", ", fluxNonTrouves)}). Veuillez d'abord exécuter la synchronisation des flux (/sync).",
+            MissingFluxCodes = fluxNonTrouves
+        });
+    }
+
+    return Ok(listeComplete);
+}
 	[HttpGet]
 	[ProducesResponseType(typeof(List<FluxResponse>), StatusCodes.Status200OK)]
 	public async Task<ActionResult<List<FluxResponse>>> GetAll(CancellationToken cancellationToken)
@@ -62,6 +181,40 @@ public class FluxController : ControllerBase
 		return Ok(fluxes);
 	}
 
+/// <summary>
+    /// Récupère directement les données depuis la vue SQL Flux_Cib
+    /// </summary>
+    [HttpGet("xrt-cib")]
+    [ProducesResponseType(typeof(List<FluxCibResponse>), StatusCodes.Status200OK)]
+    public async Task<ActionResult<List<FluxCibResponse>>> GetFromView([FromQuery] string? codeBanque, CancellationToken cancellationToken)
+    {
+        IQueryable<FluxCibView> query = _XRTContext.FluxCibViews.AsNoTracking();
+
+        // Filtre optionnel par Banque (champ BQ dans la vue)
+        if (!string.IsNullOrWhiteSpace(codeBanque))
+        {
+            string cleanBank = codeBanque.Trim().ToLower();
+            query = query.Where(v => v.BanqueCode != null && v.BanqueCode.ToLower() == cleanBank);
+        }
+
+        var viewData = await query.ToListAsync(cancellationToken);
+
+        // Projection directe vers le DTO de réponse
+        var response = viewData.Select(v => new FluxCibResponse
+        {
+            Code = v.Code,
+            Description = v.Description,
+            Flux = v.Flux,
+            Cib1 = v.Cib1,
+            Cib2 = v.Cib2,
+            Acc = v.Acc,
+            Rib = v.Rib,
+            CodeBanqueRib = v.CodeBanqueRib,
+            BanqueCode = v.BanqueCode
+        }).ToList();
+
+        return Ok(response);
+    }
 [HttpPut("bank/{bankCode}/flux/{fluxCode}/cib")]
 [ProducesResponseType(typeof(FluxResponse), StatusCodes.Status200OK)]
 [ProducesResponseType(StatusCodes.Status400BadRequest)]
